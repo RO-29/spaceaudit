@@ -446,44 +446,7 @@ func (e *Env) systemFacts() []model.Finding {
 			})
 		}
 	}
-	if lsof, err := probe.Run(60*time.Second, "lsof", "-nP", "+L1"); err == nil {
-		var total int64
-		procs := map[string]int64{}
-		seen := map[string]bool{}
-		for _, line := range strings.Split(lsof, "\n")[1:] {
-			f := strings.Fields(line)
-			if len(f) < 10 || f[4] != "REG" {
-				continue
-			}
-			key := f[5] + ":" + f[8] // one file mapped by many processes counts once
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			if sz, err := strconv.ParseInt(f[6], 10, 64); err == nil {
-				total += sz
-				procs[f[0]+" (pid "+f[1]+")"] += sz
-			}
-		}
-		if total >= e.Opt.MinBytes {
-			var names []string
-			for p := range procs {
-				names = append(names, p)
-			}
-			sort.Slice(names, func(i, j int) bool { return procs[names[i]] > procs[names[j]] })
-			for i, n := range names {
-				names[i] = n + " " + fsx.Human(procs[n])
-			}
-			out = append(out, model.Finding{
-				ID: id("deleted-open"), Rule: "deleted-open-files", Category: catSystem, Title: "Deleted files that programs still hold open",
-				Bytes: total, Safety: model.Review, Confidence: "medium",
-				Reasons:  []string{"These files are already deleted, but the space returns only when the program closes them."},
-				Risks:    []string{"Restarting a program ends its current work."},
-				Blockers: []string{"Largest holders: " + strings.Join(limit(names, 6), ", ") + "."},
-				Verify:   []string{"lsof -nP +L1"}, Commands: []string{"Quit and start each listed program again, or restart the Mac."},
-			})
-		}
-	}
+	out = append(out, e.deletedOpen()...)
 	tmp := os.TempDir()
 	if u := fsx.Measure(tmp); u.Bytes >= e.Opt.MinBytes {
 		out = append(out, model.Finding{

@@ -298,3 +298,12 @@ func TestMeasureWithinStops(t *testing.T) {
 		t.Errorf("MeasureWithin did not stop on time: %+v after %s", u, time.Since(start))
 	}
 }
+
+func TestHeldFileNames(t *testing.T) {
+	if got := appName("/Applications/Visual Studio Code.app/Contents/Frameworks/x"); got != "Visual Studio Code" {
+		t.Errorf("appName = %q", got)
+	}
+	if runFor(3*24*time.Hour+time.Hour) != "3 days" || runFor(5*time.Hour) != "5 hours" {
+		t.Error("runFor formats wrong")
+	}
+}

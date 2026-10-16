@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -111,6 +113,23 @@ func (e *Env) walkHome() walkResult {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, e.Opt.Jobs)
 	rootDev := devOf(e.Home)
+	var nFiles, nBytes atomic.Int64
+	var where atomic.Value
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				w, _ := where.Load().(string)
+				e.Opt.Progress(fmt.Sprintf("Walking the home folder: %d files, %s so far (%s)", nFiles.Load(), fsx.Human(nBytes.Load()), e.Pretty(w)))
+			}
+		}
+	}()
 	for _, en := range ents {
 		p := filepath.Join(e.Home, en.Name())
 		if !en.IsDir() {
@@ -186,6 +205,10 @@ func (e *Env) walkHome() walkResult {
 					seen[sys.Ino] = true
 				}
 				b := sys.Blocks * 512
+				if nFiles.Add(1)%2000 == 0 {
+					where.Store(filepath.Dir(p))
+				}
+				nBytes.Add(b)
 				local.total += b
 				local.top[second(e.Home, p)] += b
 				if b >= e.Opt.LargeBytes {
