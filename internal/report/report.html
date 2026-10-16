@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk Space Audit</title>
+<style>
+:root{
+  --bg:#f6f7f9;--panel:#ffffff;--panel2:#f0f2f5;--ink:#16181d;--ink2:#4b5260;--ink3:#7a8190;--line:#e2e5ea;
+  --safe:#1f9d55;--safe-bg:#e6f6ec;--review:#c27c0e;--review-bg:#fdf3e1;--risky:#d13f3f;--risky-bg:#fdeaea;--keep:#3a6fd8;--keep-bg:#e8effc;
+  --free:#cfd5de;--other:#8d96a6;--accent:#5b5bd6;--code:#f3f4f7;--shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.08);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--ink:#eceef2;--ink2:#b3b9c5;--ink3:#7f8796;--line:#2a2f3a;
+  --safe:#3ccf7d;--safe-bg:#12301f;--review:#f0b44c;--review-bg:#352712;--risky:#ff6b6b;--risky-bg:#3a1717;--keep:#7aa2ff;--keep-bg:#172440;
+  --free:#2c323d;--other:#5d6676;--accent:#8b8bff;--code:#11141a;--shadow:none;}}
+:root[data-theme="dark"]{
+  --bg:#0f1115;--panel:#171a21;--panel2:#1e222b;--ink:#eceef2;--ink2:#b3b9c5;--ink3:#7f8796;--line:#2a2f3a;
+  --safe:#3ccf7d;--safe-bg:#12301f;--review:#f0b44c;--review-bg:#352712;--risky:#ff6b6b;--risky-bg:#3a1717;--keep:#7aa2ff;--keep-bg:#172440;
+  --free:#2c323d;--other:#5d6676;--accent:#8b8bff;--code:#11141a;--shadow:none;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Inter",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+h1{font-size:26px;letter-spacing:-.02em;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 14px;letter-spacing:-.01em}
+.sub{color:var(--ink3);font-size:13px}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink2);border-radius:8px;padding:6px 11px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{color:var(--ink);border-color:var(--ink3)}
+.notice{margin:18px 0;padding:12px 14px;border-radius:10px;background:var(--keep-bg);color:var(--ink);font-size:14px;border:1px solid color-mix(in srgb,var(--keep) 30%,transparent)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(4,1fr);margin:18px 0}
+.kpi .label{font-size:12px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em}
+.kpi .val{font-size:28px;font-weight:650;letter-spacing:-.02em;margin-top:2px;font-variant-numeric:tabular-nums}
+.kpi .hint{font-size:12.5px;color:var(--ink3)}
+.kpi.safe .val{color:var(--safe)}.kpi.review .val{color:var(--review)}.kpi.risky .val{color:var(--risky)}
+.bar{display:flex;height:16px;border-radius:999px;overflow:hidden;background:var(--free);margin:10px 0 8px}
+.bar span{display:block;height:100%}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.two{grid-template-columns:1.35fr 1fr;margin-bottom:14px}
+#tree{position:relative;height:380px;border-radius:10px;overflow:hidden;background:var(--panel2)}
+.tile{position:absolute;border:1px solid var(--panel);padding:6px 8px;overflow:hidden;cursor:pointer;color:#fff;font-size:12px;line-height:1.25;transition:filter .12s}
+.tile:hover{filter:brightness(1.12)}
+.tile b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile small{opacity:.85}
+.crumb{font-size:13px;color:var(--ink3);margin-bottom:8px;min-height:20px}
+.crumb a{color:var(--accent);cursor:pointer;text-decoration:none}
+.cats .row{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:13.5px;padding:7px 0;border-bottom:1px solid var(--line)}
+.cats .row:last-child{border:0}
+.mini{height:6px;border-radius:999px;background:var(--panel2);margin-top:5px;overflow:hidden;grid-column:1/3}
+.mini span{display:block;height:100%;background:var(--accent);border-radius:999px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer;color:var(--ink2)}
+.chip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip .n{opacity:.6;margin-left:4px;font-variant-numeric:tabular-nums}
+input[type=search],select{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 10px;font:inherit;font-size:13.5px}
+input[type=search]{flex:1;min-width:180px}
+.f{border:1px solid var(--line);border-radius:12px;background:var(--panel);margin-bottom:8px;overflow:hidden}
+.f>summary{list-style:none;display:grid;grid-template-columns:76px 1fr auto;gap:12px;align-items:center;padding:12px 14px;cursor:pointer}
+.f>summary::-webkit-details-marker{display:none}
+.f[open]>summary{border-bottom:1px solid var(--line)}
+.badge{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:6px;text-align:center}
+.b-safe{color:var(--safe);background:var(--safe-bg)}.b-review{color:var(--review);background:var(--review-bg)}.b-risky{color:var(--risky);background:var(--risky-bg)}.b-keep{color:var(--keep);background:var(--keep-bg)}
+.t{font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{font-size:12.5px;color:var(--ink3);margin-top:1px}
+.size{font-variant-numeric:tabular-nums;font-weight:650;text-align:right;min-width:84px}
+.sz{height:4px;background:var(--panel2);border-radius:99px;margin-top:6px;overflow:hidden}.sz span{display:block;height:100%}
+.body{padding:14px 16px 16px;display:grid;gap:12px}
+.sec h4{margin:0 0 5px;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink3)}
+.sec ul{margin:0;padding-left:18px}.sec li{margin:2px 0;color:var(--ink2)}
+.blk{background:var(--risky-bg);border-radius:8px;padding:8px 12px;color:var(--ink)}
+.blk li{color:var(--ink)}
+pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 44px 10px 12px;overflow-x:auto;font:12.5px/1.55 ui-monospace,"SF Mono",Menlo,monospace;position:relative;white-space:pre}
+.cp{position:absolute;top:6px;right:6px;font-size:11.5px;padding:3px 7px}
+.paths{font:12.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--ink2);word-break:break-all}
+.facts td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:top}
+.facts td:first-child{color:var(--ink3);white-space:nowrap}
+footer{margin-top:28px;font-size:12.5px;color:var(--ink3)}
+.empty{padding:30px;text-align:center;color:var(--ink3)}
+@media (max-width:820px){.kpis{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.f>summary{grid-template-columns:64px 1fr}.size{grid-column:2;text-align:left}#tree{height:300px}.wrap{padding:20px 16px 40px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div><h1>Disk Space Audit</h1><div class="sub" id="sub"></div></div>
+  <div style="display:flex;gap:8px"><button class="btn" id="theme">Theme</button><button class="btn" id="expand">Expand all</button></div>
+</header>
+<div class="notice"><b>This report only recommends.</b> spaceaudit deleted nothing. Check each path and run each verify command yourself before you run a cleanup command. Keep a backup of anything you cannot download again.</div>
+
+<div class="card"><h2>Disk</h2><div class="bar" id="diskbar"></div><div class="legend" id="disklegend"></div></div>
+<div class="grid kpis" id="kpis"></div>
+
+<div class="grid two">
+  <div class="card"><h2>Where the space goes</h2><div class="crumb" id="crumb"></div><div id="tree"></div></div>
+  <div class="card cats"><h2>Reclaimable by category</h2><div id="cats"></div></div>
+</div>
+
+<div class="card">
+  <h2>Recommendations</h2>
+  <div class="toolbar" id="chips"></div>
+  <div class="toolbar"><input type="search" id="q" placeholder="Search title, path or reason"><select id="cat"></select><select id="sort"><option value="safety">Sort: safety, then size</option><option value="size">Sort: size</option><option value="age">Sort: oldest change</option></select></div>
+  <div id="list"></div>
+</div>
+
+<div class="grid two" style="margin-top:14px">
+  <div class="card"><h2>Facts that change the advice</h2><table class="facts" id="facts"></table></div>
+  <div class="card"><h2>How to read the levels</h2>
+    <div class="sec"><ul>
+      <li><span class="badge b-safe">Safe</span> The owner program makes it again by itself. No user data.</li>
+      <li><span class="badge b-review">Review</span> Regenerable, but costs a download, a rebuild or some state, or a program uses it now.</li>
+      <li><span class="badge b-risky">Risky</span> Can hold data that exists only here, or a tool depends on it.</li>
+      <li><span class="badge b-keep">Keep</span> Information only. Use the owner app to manage it.</li>
+    </ul></div>
+  </div>
+</div>
+<footer id="foot"></footer>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function(){
+const R=JSON.parse(document.getElementById('data').textContent);
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const H=b=>{if(!b)return'0 B';const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return(b>=100||i==0?b.toFixed(0):b.toFixed(1))+' '+u[i]};
+const home=R.home||'';const pretty=p=>p&&home&&p.startsWith(home+'/')?'~/'+p.slice(home.length+1):p;
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ago=t=>{if(!t)return'';const d=(Date.now()-new Date(t))/864e5;return d<1?'today':d<2?'yesterday':Math.round(d)+' days ago'};
+
+$('#sub').textContent=`${R.host} · macOS ${R.macos} · ${new Date(R.generatedAt).toLocaleString()} · scan took ${Math.round(R.durationSec)}s · spaceaudit ${R.version}`;
+
+const V=R.volume,T=R.totals;
+function disk(){
+  const bar=$('#diskbar'),lg=$('#disklegend');if(!V.total){bar.parentNode.style.display='none';return}
+  const parts=[['Safe to free',T.safe,'--safe'],['Free after review',T.review,'--review'],['Risky',T.risky,'--risky'],['Other used',Math.max(0,V.used-T.safe-T.review-T.risky),'--other'],['Free',V.available,'--free']];
+  const tot=V.used+V.available;bar.innerHTML=parts.map(p=>`<span title="${p[0]}: ${H(p[1])}" style="width:${100*p[1]/tot}%;background:var(${p[2]})"></span>`).join('');
+  lg.innerHTML=parts.map(p=>`<span><i style="background:var(${p[2]})"></i>${p[0]} <b>${H(p[1])}</b></span>`).join('');
+}
+disk();
+$('#kpis').innerHTML=[['','Free now',H(V.available),V.total?`${Math.round(100*V.used/V.total)}% of ${H(V.total)} used`:''],['safe','Safe to free',H(T.safe),'rebuilds by itself'],['review','After review',H(T.review),'regenerable, with a cost'],['risky','Risky',H(T.risky),'can hold your data']]
+ .map(k=>`<div class="card kpi ${k[0]}"><div class="label">${k[1]}</div><div class="val">${k[2]}</div><div class="hint">${k[3]}</div></div>`).join('');
+
+// Squarified treemap of the home folder, two levels deep.
+const hues=[250,200,160,30,340,280,120,15,190,60];
+function squarify(items,x,y,w,h){
+  const out=[];let rest=items.slice();const total=rest.reduce((a,b)=>a+b.v,0);if(!total)return out;
+  const scale=w*h/total;rest=rest.map(i=>({...i,a:i.v*scale}));
+  while(rest.length){
+    const short=Math.min(w,h);let row=[],best=Infinity;
+    while(rest.length){const cand=row.concat(rest[0]);const s=cand.reduce((a,b)=>a+b.a,0);const mx=Math.max(...cand.map(c=>c.a)),mn=Math.min(...cand.map(c=>c.a));
+      const worst=Math.max(short*short*mx/(s*s),(s*s)/(short*short*mn));if(worst>best)break;best=worst;row=cand;rest.shift()}
+    const s=row.reduce((a,b)=>a+b.a,0);
+    if(w>=h){const rw=s/h;let cy=y;for(const r of row){const rh=r.a/rw;out.push({...r,x,y:cy,w:rw,h:rh});cy+=rh}x+=rw;w-=rw}
+    else{const rh=s/w;let cx=x;for(const r of row){const rw=r.a/rh;out.push({...r,x:cx,y,w:rw,h:rh});cx+=rw}y+=rh;h-=rh}
+  }
+  return out;
+}
+let zoom=null;
+function tree(){
+  const el=$('#tree');const W=el.clientWidth,Hh=el.clientHeight;
+  const areas=(R.areas||[]).filter(a=>a.bytes>0);
+  if(!areas.length){el.innerHTML='<div class="empty">Run a full scan (without --quick) to see this map.</div>';return}
+  let items;
+  if(zoom!==null){const a=areas[zoom];items=(a.children&&a.children.length?a.children:[a]).map((c,i)=>({v:c.bytes,label:c.path,hue:hues[zoom%hues.length],l:42+(i%5)*5}));
+    $('#crumb').innerHTML=`<a id="up">Home</a> / ${esc(pretty(a.path))} · ${H(a.bytes)}`;}
+  else{items=areas.map((a,i)=>({v:a.bytes,label:a.path,hue:hues[i%hues.length],l:46,idx:i}));$('#crumb').textContent='Home folder · click a block to open it';}
+  el.innerHTML=squarify(items,0,0,W,Hh).map(t=>{const big=t.w>70&&t.h>34;
+    return `<div class="tile" data-i="${t.idx??''}" title="${esc(pretty(t.label))} · ${H(t.v)}" style="left:${t.x}px;top:${t.y}px;width:${t.w}px;height:${t.h}px;background:hsl(${t.hue} 55% ${t.l}%)">${big?`<b>${esc(pretty(t.label).split('/').pop()||'~')}</b><small>${H(t.v)}</small>`:''}</div>`}).join('');
+  el.querySelectorAll('.tile').forEach(n=>n.onclick=()=>{if(zoom===null&&n.dataset.i!==''){zoom=+n.dataset.i;tree()}});
+  const up=$('#up');if(up)up.onclick=()=>{zoom=null;tree()};
+}
+tree();addEventListener('resize',()=>tree());
+
+// Category totals for everything that is not "keep".
+const cats={};for(const f of R.findings){if(f.safety==='keep')continue;cats[f.category]=(cats[f.category]||0)+f.bytes}
+const cmax=Math.max(1,...Object.values(cats));
+$('#cats').innerHTML=Object.entries(cats).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="row"><span>${esc(k)}</span><b>${H(v)}</b><div class="mini"><span style="width:${100*v/cmax}%"></span></div></div>`).join('')||'<div class="empty">Nothing found.</div>';
+
+// Recommendation list.
+let level='all';const lv=['all','safe','review','risky','keep'];
+const count=l=>R.findings.filter(f=>l==='all'||f.safety===l).length;
+function chips(){$('#chips').innerHTML=lv.map(l=>`<button class="chip ${l===level?'on':''}" data-l="${l}">${l[0].toUpperCase()+l.slice(1)}<span class="n">${count(l)}</span></button>`).join('');
+  document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{level=c.dataset.l;chips();list()})}
+const catSel=$('#cat');catSel.innerHTML='<option value="">All categories</option>'+[...new Set(R.findings.map(f=>f.category))].sort().map(c=>`<option>${esc(c)}</option>`).join('');
+const fmax=Math.max(1,...R.findings.map(f=>f.bytes));
+const code=(title,lines)=>lines&&lines.length?`<div class="sec"><h4>${title}</h4><pre>${esc(lines.join('\n'))}<button class="btn cp">Copy</button></pre></div>`:'';
+const ul=(title,xs,cls='')=>xs&&xs.length?`<div class="sec ${cls}"><h4>${title}</h4><ul>${xs.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:'';
+function list(){
+  const q=$('#q').value.toLowerCase(),c=catSel.value,s=$('#sort').value;
+  let fs=R.findings.filter(f=>(level==='all'||f.safety===level)&&(!c||f.category===c)&&(!q||[f.title,...f.paths,...f.reasons,...f.risks].join(' ').toLowerCase().includes(q)));
+  if(s==='size')fs.sort((a,b)=>b.bytes-a.bytes);
+  if(s==='age')fs.sort((a,b)=>new Date(a.modified||0)-new Date(b.modified||0));
+  $('#list').innerHTML=fs.map(f=>{
+    const col=`var(--${f.safety})`;
+    const when=f.lastUsed?`opened ${ago(f.lastUsed)}`:f.modified?`changed ${ago(f.modified)}`:'';
+    return `<details class="f"><summary><span class="badge b-${f.safety}">${f.safety}</span>
+      <div style="min-width:0"><div class="t">${esc(f.title)}</div><div class="meta">${esc(f.category)}${when?' · '+when:''}${f.blockers.length?' · <b style="color:var(--risky)">blocked</b>':''}${f.partial?' · partial size':''}</div>
+      <div class="sz"><span style="width:${Math.max(.5,100*f.bytes/fmax)}%;background:${col}"></span></div></div>
+      <div class="size">${H(f.bytes)}</div></summary>
+      <div class="body">
+        ${f.paths.length?`<div class="sec"><h4>Paths</h4><div class="paths">${f.paths.slice(0,8).map(p=>esc(pretty(p))).join('<br>')}${f.paths.length>8?`<br>… ${f.paths.length-8} more`:''}</div></div>`:''}
+        ${ul('Blockers',f.blockers,'blk')}${ul('Why',f.reasons)}${ul('Risks',f.risks)}
+        ${code('1. Verify first',f.verify)}${code('2. Command (run only after you verify)',f.commands.slice(0,12))}${code('Undo-friendly alternative',f.alternate)}
+        ${f.restore?`<div class="sec"><h4>How to get it back</h4><div style="color:var(--ink2)">${esc(f.restore)}</div></div>`:''}
+        ${ul('Notes',f.notes)}
+      </div></details>`}).join('')||'<div class="empty">No finding matches.</div>';
+  document.querySelectorAll('.cp').forEach(b=>b.onclick=e=>{e.preventDefault();const t=b.parentNode.firstChild.textContent;navigator.clipboard.writeText(t).then(()=>{b.textContent='Copied';setTimeout(()=>b.textContent='Copy',1200)})});
+}
+chips();list();['#q','#cat','#sort'].forEach(s=>$(s).addEventListener('input',list));
+
+$('#facts').innerHTML=(R.facts||[]).map(f=>`<tr><td>${esc(f.key)}</td><td><b>${esc(f.value)}</b>${f.note?`<div class="sub">${esc(f.note)}</div>`:''}</td></tr>`).join('')+(R.unexplained?`<tr><td>not explained</td><td><b>${H(R.unexplained)}</b><div class="sub">Space the scan could not attribute. Usually root-only folders, other users or snapshots.</div></td></tr>`:'');
+$('#foot').innerHTML=(R.warnings||[]).map(w=>'⚠ '+esc(w)).join('<br>');
+
+let open=false;$('#expand').onclick=()=>{open=!open;document.querySelectorAll('details.f').forEach(d=>d.open=open);$('#expand').textContent=open?'Collapse all':'Expand all'};
+const root=document.documentElement;try{const t=localStorage.getItem('sa-theme');if(t)root.dataset.theme=t}catch(e){}
+$('#theme').onclick=()=>{const dark=root.dataset.theme?root.dataset.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;root.dataset.theme=dark?'light':'dark';try{localStorage.setItem('sa-theme',root.dataset.theme)}catch(e){}tree()};
+})();
+</script>
+</body>
+</html>

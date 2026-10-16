@@ -1,0 +1,5 @@
+bin/
+dist/
+*.html.tmp
+spaceaudit-report.*
+spaceaudit-review.sh
