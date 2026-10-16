@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RO-29/spaceaudit/internal/fsx"
 	"github.com/RO-29/spaceaudit/internal/model"
 )
 
@@ -271,5 +272,29 @@ func TestNodeVersionsKeepsDefault(t *testing.T) {
 	}
 	if !found {
 		t.Error("v20.1.0 should be reported")
+	}
+}
+
+func TestCloudFoldersAreNeverOpened(t *testing.T) {
+	_, home := testEnv(t)
+	fsx.Home = home
+	defer func() { fsx.Home = "" }()
+	write(t, filepath.Join(home, "Library/Mobile Documents/com~apple~CloudDocs/big.bin"), 1<<20)
+	write(t, filepath.Join(home, "Library/CloudStorage/GoogleDrive-x/f.bin"), 1<<20)
+	write(t, filepath.Join(home, "Library/Other/f.bin"), 1<<20)
+	if u := fsx.Measure(filepath.Join(home, "Library/Mobile Documents")); !u.Skipped || u.Bytes != 0 {
+		t.Errorf("iCloud Drive was opened: %+v", u)
+	}
+	u := fsx.Measure(filepath.Join(home, "Library"))
+	if u.Bytes == 0 || u.Bytes >= 2<<20 {
+		t.Errorf("Library walk must count Other but skip both cloud folders, got %d bytes", u.Bytes)
+	}
+}
+
+func TestMeasureWithinStops(t *testing.T) {
+	start := time.Now()
+	u := fsx.MeasureWithin("/", time.Millisecond)
+	if !u.TimedOut || time.Since(start) > time.Second {
+		t.Errorf("MeasureWithin did not stop on time: %+v after %s", u, time.Since(start))
 	}
 }

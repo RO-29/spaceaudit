@@ -134,6 +134,11 @@ func BlindSpots(r model.Report) []string {
 	if len(r.Areas) == 0 {
 		g = append(g, "Quick scan: project folders, worktrees, duplicates and large files were not checked.")
 	}
+	for _, f := range r.Facts {
+		if f.Key == "not opened" {
+			g = append(g, f.Value+" was not opened: reading cloud folders can download files. Use Optimize Mac Storage or the cloud app.")
+		}
+	}
 	return append(g, "APFS clones share disk blocks, so a delete can free less than the size shown.")
 }
 

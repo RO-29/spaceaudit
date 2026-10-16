@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RO-29/spaceaudit/internal/fsx"
 	"github.com/RO-29/spaceaudit/internal/model"
@@ -68,6 +69,10 @@ func (e *Env) build(r Rule, paths []string, u fsx.Usage) model.Finding {
 
 // annotate adds the measurement caveats that change how much space a delete frees.
 func (e *Env) annotate(f *model.Finding, u fsx.Usage) {
+	if u.TimedOut {
+		f.Partial = true
+		f.Notes = append(f.Notes, "Measuring stopped after 2 minutes because macOS held a folder (a privacy prompt or a cloud folder). The real size can be larger.")
+	}
 	if u.Denied > 0 {
 		f.Partial = true
 		f.Notes = append(f.Notes, strconv.Itoa(u.Denied)+" folders were not readable, so the real size can be larger. Give Full Disk Access to the terminal or the app and scan again.")
@@ -141,10 +146,14 @@ func (e *Env) staticRules() ([]model.Finding, []string) {
 	return out, claimed
 }
 
+const measureLimit = 2 * time.Minute
+
 func measureAll(paths []string) fsx.Usage {
 	var t fsx.Usage
 	for _, p := range paths {
-		u := fsx.Measure(p)
+		u := fsx.MeasureWithin(p, measureLimit)
+		t.TimedOut = t.TimedOut || u.TimedOut
+		t.Skipped = t.Skipped || u.Skipped
 		t.Bytes += u.Bytes
 		t.Files += u.Files
 		t.Denied += u.Denied

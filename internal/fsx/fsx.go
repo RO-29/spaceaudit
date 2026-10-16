@@ -24,6 +24,37 @@ type Usage struct {
 	Shared   int64     // bytes in files with more than one hard link
 	Symlinks int
 	Exists   bool
+	Skipped  bool // a File Provider folder that the scan must not open
+	TimedOut bool
+}
+
+// providerRoots are File Provider folders (iCloud Drive, Google Drive, Dropbox, OneDrive).
+// Opening them can download files or block on a privacy prompt, so the scan never opens them.
+var providerRoots = []string{"Library/Mobile Documents", "Library/CloudStorage", "Library/Containers/com.apple.CloudDocs.MobileDocumentsFileProvider"}
+
+// Provider reports whether p is a File Provider folder or is inside one.
+func Provider(p, home string) bool {
+	for _, r := range providerRoots {
+		if Under(p, filepath.Join(home, r)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Home is the folder that Provider checks against. The scanner sets it once.
+var Home string
+
+// MeasureWithin is Measure with a time limit. A folder that blocks returns what was counted so far.
+func MeasureWithin(root string, limit time.Duration) Usage {
+	done := make(chan Usage, 1)
+	go func() { done <- Measure(root) }()
+	select {
+	case u := <-done:
+		return u
+	case <-time.After(limit):
+		return Usage{Exists: true, TimedOut: true}
+	}
 }
 
 // Measure walks root on one device. Hard links are counted once.
@@ -34,6 +65,10 @@ func Measure(root string) Usage {
 		return u
 	}
 	u.Exists = true
+	if Home != "" && Provider(root, Home) {
+		u.Skipped = true
+		return u
+	}
 	rootSys, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
 		return u
@@ -61,7 +96,7 @@ func Measure(root string) Usage {
 		if !ok {
 			return nil
 		}
-		if d.IsDir() && sys.Dev != rootSys.Dev {
+		if d.IsDir() && (sys.Dev != rootSys.Dev || (Home != "" && p != root && Provider(p, Home))) {
 			return fs.SkipDir
 		}
 		add(&u, info, sys, seen)

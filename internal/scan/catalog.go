@@ -257,10 +257,6 @@ var catalog = []Rule{
 	{ID: "mail-data", Category: catUser, Title: "Mail messages and attachments", Paths: []string{"~/Library/Mail"}, Safety: model.Keep,
 		Reasons: []string{"Mail keeps a local copy of your mailboxes."}, Risks: []string{"Deleting files here corrupts Mail. For IMAP accounts, Mail downloads messages again."},
 		Commands: []string{"Remove large attachments in Mail, or remove the account and add it again."}},
-	{ID: "icloud-drive", Category: catUser, Title: "iCloud Drive local copies", Paths: []string{"~/Library/Mobile Documents"}, Safety: model.Keep,
-		Reasons:  []string{"Files from iCloud Drive that are downloaded to this Mac."},
-		Risks:    []string{"A delete here deletes the file in iCloud and on every device."},
-		Commands: []string{"Turn on Optimize Mac Storage in System Settings > Apple Account > iCloud, or right-click a folder in Finder > Remove Download."}},
 
 	// System.
 	{ID: "user-logs", Category: catSystem, Title: "Your application logs", Paths: []string{"~/Library/Logs"}, Safety: model.Safe,

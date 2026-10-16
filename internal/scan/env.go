@@ -104,7 +104,7 @@ func (e *Env) measure(p string) fsx.Usage {
 	if u, ok := e.sizes.Load(p); ok {
 		return u.(fsx.Usage)
 	}
-	return fsx.Measure(p)
+	return fsx.MeasureWithin(p, 2*time.Minute)
 }
 
 // UsersOf returns the programs that hold a file open at or below path.

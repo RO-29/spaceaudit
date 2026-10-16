@@ -27,8 +27,14 @@ func Run(o Options) model.Report {
 	if o.Progress == nil {
 		o.Progress = func(string) {}
 	}
+	fsx.Home = o.Home
 	o.Progress("Taking a snapshot of open files (lsof)")
 	e := newEnv(o)
+	for _, r := range []string{"Library/Mobile Documents", "Library/CloudStorage"} {
+		if fsx.Exists(filepath.Join(o.Home, r)) {
+			e.fact("not opened", "~/"+r, "Cloud folders (iCloud Drive, Google Drive, Dropbox, OneDrive) are not read, because reading them can download files. Manage them in their apps.")
+		}
+	}
 	if os.Geteuid() == 0 {
 		e.warn("The scan runs as root. Commands in this report use $HOME, so check that HOME points at the right user.")
 	}

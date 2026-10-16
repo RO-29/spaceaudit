@@ -145,7 +145,7 @@ func (e *Env) walkHome() walkResult {
 				}
 				name := d.Name()
 				if d.IsDir() && p != top {
-					if devOf(p) != rootDev {
+					if devOf(p) != rootDev || fsx.Provider(p, e.Home) {
 						return fs.SkipDir
 					}
 					if name == ".git" {

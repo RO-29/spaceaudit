@@ -243,13 +243,20 @@ struct ContentView: View {
                 }.padding()
             }
         }
+        .toolbarRole(.editor)
         .toolbar {
             ToolbarItemGroup {
-                Button { scanner.scan(quick: false) } label: { Label("Full scan", systemImage: "arrow.clockwise") }.disabled(scanner.running)
-                Button { scanner.scan(quick: true) } label: { Label("Quick scan", systemImage: "hare") }.disabled(scanner.running)
-                Button { scanner.openHTML() } label: { Label("Open HTML report", systemImage: "safari") }.disabled(scanner.running)
-                Button { save("html", "spaceaudit-report.html") } label: { Label("Save HTML report", systemImage: "doc.richtext") }.disabled(scanner.running)
-                Button { save("script", "spaceaudit-review.sh") } label: { Label("Review script", systemImage: "terminal") }.disabled(scanner.running)
+                Button { scanner.scan(quick: false) } label: { Label("Full scan", systemImage: "arrow.clockwise").labelStyle(.titleAndIcon) }
+                    .help("Scan everything, including project folders, worktrees and duplicates (some minutes)").disabled(scanner.running)
+                Button { scanner.scan(quick: true) } label: { Label("Quick scan", systemImage: "hare").labelStyle(.titleAndIcon) }
+                    .help("Scan known caches and apps only (under a minute)").disabled(scanner.running)
+                Button { scanner.openHTML() } label: { Label("HTML report", systemImage: "safari").labelStyle(.titleAndIcon) }
+                    .help("Write a full HTML report and open it in the browser").disabled(scanner.running)
+                Menu {
+                    Button("Save HTML report…") { save("html", "spaceaudit-report.html") }
+                    Button("Save Markdown report…") { save("md", "spaceaudit-report.md") }
+                    Button("Save review script…") { save("script", "spaceaudit-review.sh") }
+                } label: { Label("Export", systemImage: "square.and.arrow.up").labelStyle(.titleAndIcon) }.disabled(scanner.running)
             }
         }
         .overlay {
@@ -290,7 +297,7 @@ struct ContentView: View {
                         .clipShape(Capsule())
                 }.frame(height: 10)
             } else {
-                Text("No scan yet").foregroundStyle(.secondary)
+                Text(scanner.running ? "Scanning…" : "No scan yet. Press Quick scan or Full scan.").foregroundStyle(.secondary)
             }
         }.padding(12)
     }
