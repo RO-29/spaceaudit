@@ -120,7 +120,11 @@ func (e *Env) sandboxWebCaches(claimed []string) []model.Finding {
 // duplicates finds identical large files. It compares size, then a partial hash, then a full hash.
 func (e *Env) duplicates(files []large) []model.Finding {
 	bySize := map[int64][]large{}
+	repoOf := map[string]bool{}
 	for _, f := range files {
+		if !e.userOwned(f.path, repoOf) {
+			continue
+		}
 		bySize[f.apparent] = append(bySize[f.apparent], f)
 	}
 	var groups [][]large
@@ -185,6 +189,27 @@ func (e *Env) duplicates(files []large) []model.Finding {
 		}
 	}
 	return out
+}
+
+// userOwned is true for your own files. Copies inside git trees, hidden tool folders, ~/Library
+// and app bundles belong to a repo or an app, and deleting one of them breaks it.
+func (e *Env) userOwned(p string, repoOf map[string]bool) bool {
+	rel, ok := strings.CutPrefix(p, e.Home+"/")
+	if !ok || strings.HasPrefix(rel, "Library/") {
+		return false
+	}
+	for _, part := range strings.Split(filepath.Dir(rel), "/") {
+		if (part != "." && strings.HasPrefix(part, ".")) || strings.HasSuffix(part, ".app") {
+			return false
+		}
+	}
+	dir := filepath.Dir(p)
+	inRepo, seen := repoOf[dir]
+	if !seen {
+		inRepo = GitTop(dir, e.Home) != ""
+		repoOf[dir] = inRepo
+	}
+	return !inRepo
 }
 
 func hashFile(p string, limit int64) string {

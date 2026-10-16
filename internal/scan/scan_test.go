@@ -227,6 +227,18 @@ func TestDuplicates(t *testing.T) {
 		t.Errorf("group should hold a, b and the hard link (3 paths), got %v", got[0].Paths)
 	}
 	checkVerify(t, "dup", got[0].Verify)
+	repo := filepath.Join(home, "r")
+	write(t, filepath.Join(repo, "x.bin"), 3<<20)
+	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
+	write(t, filepath.Join(home, ".tool/x.bin"), 3<<20)
+	var mixed []large
+	for _, p := range []string{a, filepath.Join(repo, "x.bin"), filepath.Join(home, ".tool/x.bin")} {
+		st, _ := os.Stat(p)
+		mixed = append(mixed, large{p, st.Size(), st.ModTime(), st.Size()})
+	}
+	if got := e.duplicates(mixed); len(got) != 0 {
+		t.Errorf("copies inside a git tree or a hidden tool folder must not count: %+v", got[0].Paths)
+	}
 	only := e.duplicates([]large{fs[0], fs[3]})
 	if len(only) != 0 {
 		t.Errorf("two hard links to one file are not duplicates: %+v", only)
