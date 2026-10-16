@@ -30,6 +30,7 @@ var allowed = map[string][][]string{
 	"yarn":         {{"cache", "dir"}},
 	"pnpm":         {{"store", "path"}},
 	"sw_vers":      {{"-productVersion"}},
+	"node":         {{"--version"}},
 	"plutil":       {{"-extract", "CFBundleIdentifier", "raw", "-o", "-"}},
 	"pbcopy":       {{}},
 	"open":         {{"-R"}},

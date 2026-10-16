@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +47,13 @@ func Text(w io.Writer, r model.Report, detail, ansi bool) {
 	t := r.Totals
 	fmt.Fprintf(w, "Can free: %s safe, %s after review, %s risky. Scan took %.0fs.\n\n",
 		c(model.Safe, fsx.Human(t.Safe)), c(model.Review, fsx.Human(t.Review)), c(model.Risky, fsx.Human(t.Risky)), r.DurationSec)
+	if wins := QuickWins(r, 5); len(wins) > 0 && !detail {
+		fmt.Fprintln(w, b("Quick wins")+" (largest safe items that no program uses now; spaceaudit plan writes them as a plan)")
+		for _, f := range wins {
+			fmt.Fprintf(w, "  %9s  %s\n", fsx.Human(f.Bytes), f.Title)
+		}
+		fmt.Fprintln(w)
+	}
 	for _, f := range r.Findings {
 		fmt.Fprintf(w, "%s %9s  %s\n", c(f.Safety, badge[f.Safety]), fsx.Human(f.Bytes), f.Title)
 		if !detail {
@@ -84,10 +92,49 @@ func Text(w io.Writer, r model.Report, detail, ansi bool) {
 		}
 	}
 	fmt.Fprintln(w)
+	for _, g := range BlindSpots(r) {
+		fmt.Fprintln(w, "? "+g)
+	}
 	for _, x := range r.Warnings {
 		fmt.Fprintln(w, "! "+x)
 	}
 	fmt.Fprintln(w, "! "+disclaimer)
+}
+
+// QuickWins are the largest safe findings with a command and no blocker.
+func QuickWins(r model.Report, n int) []model.Finding {
+	var out []model.Finding
+	for _, f := range r.Findings {
+		if f.Safety == model.Safe && len(f.Blockers) == 0 && len(f.Commands) > 0 {
+			out = append(out, f)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Bytes > out[j].Bytes })
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
+}
+
+// BlindSpots says what the scan could not see, so the reader does not take the totals as complete.
+func BlindSpots(r model.Report) []string {
+	var g []string
+	partial := 0
+	for _, f := range r.Findings {
+		if f.Partial {
+			partial++
+		}
+	}
+	if partial > 0 {
+		g = append(g, fmt.Sprintf("%d findings include folders that macOS did not let the scan read. Give Full Disk Access and scan again.", partial))
+	}
+	if r.Unexplained > 0 {
+		g = append(g, fsx.Human(r.Unexplained)+" of used space is outside what the scan can read (root-only folders, other users, snapshots, purgeable space).")
+	}
+	if len(r.Areas) == 0 {
+		g = append(g, "Quick scan: project folders, worktrees, duplicates and large files were not checked.")
+	}
+	return append(g, "APFS clones share disk blocks, so a delete can free less than the size shown.")
 }
 
 func first(s []string, n int) []string {
@@ -134,6 +181,38 @@ func Script(w io.Writer, r model.Report) {
 		}
 	}
 }
+
+// Plan writes the chosen findings as a script that runs only verify lines. Cleanup commands stay comments.
+func Plan(w io.Writer, r model.Report) {
+	var total int64
+	for _, f := range r.Findings {
+		total += f.Bytes
+	}
+	fmt.Fprintf(w, "#!/bin/sh\n# spaceaudit plan, %s, %d items, %s.\n", time.Now().Format(time.RFC3339), len(r.Findings), fsx.Human(total))
+	fmt.Fprintln(w, "# Running this file runs only the verify commands. Every cleanup command is a comment: uncomment one only after you check it.")
+	fmt.Fprintln(w, "# "+disclaimer)
+	for _, f := range r.Findings {
+		fmt.Fprintf(w, "\n# --- [%s] %s (%s)\n", f.Safety, f.Title, fsx.Human(f.Bytes))
+		for _, x := range f.Blockers {
+			fmt.Fprintf(w, "# BLOCKER: %s\n", x)
+		}
+		for _, x := range f.Risks {
+			fmt.Fprintf(w, "# risk: %s\n", x)
+		}
+		fmt.Fprintf(w, "echo %s\n", shellWord("== "+f.Title))
+		for _, x := range f.Verify {
+			fmt.Fprintln(w, x)
+		}
+		for _, x := range f.Commands {
+			fmt.Fprintf(w, "# %s\n", strings.ReplaceAll(x, "\n", "\n# "))
+		}
+		if f.Restore != "" {
+			fmt.Fprintf(w, "# restore: %s\n", f.Restore)
+		}
+	}
+}
+
+func shellWord(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // Markdown writes a readable report.
 func Markdown(w io.Writer, r model.Report) {

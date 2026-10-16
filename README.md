@@ -13,6 +13,7 @@ It comes in five forms that share one scanner:
 | HTML report | You want a designed report with a treemap, filters and copy buttons | `spaceaudit html` |
 | Mac app | You prefer a window | `SpaceAudit.app` |
 | Review script | You want to clean up in an editor | `spaceaudit script` |
+| Plan | You chose what to clean | `spaceaudit plan` (safe items by default, `--level` to change). Running it runs only the verify lines. |
 
 Also: `spaceaudit md` (Markdown), `spaceaudit json` (machine-readable), `spaceaudit rules` (the rule catalog), and `scripts/quick-audit.sh` (a shell-only size list for a Mac with no tools installed).
 
@@ -54,7 +55,10 @@ A finding moves from safe to review automatically when a running program has a f
 
 ## What it checks
 
-- About 60 known locations: package manager caches, toolchains, Xcode and simulators, editors, browsers, AI models, app data, system files. See [docs/RULES.md](docs/RULES.md).
+- The known locations in [docs/RULES.md](docs/RULES.md): package manager caches, toolchains, Xcode and simulators, editors, browsers, AI models, app data and system files.
+- Node.js versions in nvm, fnm and volta that are not the default or the current version, with their global packages.
+- Duplicate files of 64 MB or more (same size, then same partial hash, then same SHA-256). iCloud placeholders are skipped, because reading one downloads it.
+- Chromium caches inside sandboxed app containers (for example new Teams).
 - Every folder in `~/Library/Caches` and `~/.cache` that no rule claims.
 - Chromium and Electron caches inside every app (Slack, Notion, Chrome, Discord, Teams, editors).
 - Editor workspace state for folders that no longer exist, and old extension versions.
@@ -67,6 +71,15 @@ A finding moves from safe to review automatically when a running program has a f
 
 [docs/EDGE-CASES.md](docs/EDGE-CASES.md) lists every case where a plain delete gives the wrong result, and how the tool handles it.
 
+## Choosing what to clean
+
+Every front end lets you build a plan from the findings you choose. A plan is a shell script that runs only the read-only verify commands. Each cleanup command is in the plan as a comment, so nothing is deleted until you edit the file and uncomment that line.
+
+- HTML report: tick items, then use the plan bar (copy verify, copy commands, download plan.sh). "Quick wins" adds the largest safe items in one click.
+- TUI: `space` marks, `A` marks the visible safe items, `p` copies the plan, `w` writes it to a new file, `s` changes the sort, `?` shows every key.
+- Mac app: select rows (Cmd-click or Shift-click), then use the plan bar. Columns sort when you click their header.
+- CLI: `spaceaudit plan --level safe,review`.
+
 ## Flags
 
 ```
@@ -78,6 +91,7 @@ A finding moves from safe to review automatically when a running program has a f
 --active 48h  a project edited within this time counts as active
 --stale-days 30
 --no-docker   do not ask the Docker daemon
+--level LIST  only these levels: safe,review,risky,keep
 --home DIR    scan another home folder
 ```
 
@@ -86,12 +100,16 @@ A finding moves from safe to review automatically when a running program has a f
 - No code path can delete. `internal/safety_test.go` scans the source for `os.Remove`, `os.Rename`, `os.WriteFile`, `syscall.Unlink` and `exec.Command`, and fails on any match outside the allowlisted runner.
 - `internal/probe` runs only allowlisted read-only commands (`docker system df`, `brew cleanup -n`, `git status --porcelain`, `lsof`, `mdls`, ...). The test proves that `docker system prune`, `brew cleanup`, `git clean` and `rm` are refused.
 - The review script comments out every command and exits on its first line, so running it by mistake does nothing. A test runs it to prove that.
+- A plan runs only verify commands. A test fails when a plan line is anything else.
+- Every verify command must be read-only. A test checks each one against a list of read-only commands, and it fails on `-delete`, `-exec`, `rm`, `prune` or `clean`. (`npm cache verify` is not on that list: npm's documentation says it garbage-collects the cache.)
 - The only file it writes is the report that you ask for.
 
 ## Limits
 
 - APFS clones cannot be seen from user space, so a delete can free less than shown.
 - "Last used" is a signal, not proof. Spotlight can be off, and background helpers can touch app data.
+- Paths that the tool does not know are not classified. They appear only in the "Where the space goes" map and, when they are 1 GB or more, as "large item" findings with low confidence.
+- Other users' home folders, root-only folders and purgeable space are not measured. The report shows the gap as "not explained".
 - A rule can be wrong for your setup. That is why every finding has a verify step. **You are responsible for what you delete. Verify each item on your own Mac first.**
 
 ## License

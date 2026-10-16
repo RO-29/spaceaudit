@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +168,96 @@ func TestWorktreeIgnoredFilesAreReported(t *testing.T) {
 	keep := precious(repo)
 	if len(keep) != 1 || keep[0] != ".env" {
 		t.Fatalf("precious = %v, want [.env]", keep)
+	}
+}
+
+// readOnlyVerify lists the command starts that only read. A verify step must never change anything.
+var readOnlyVerify = []string{"du ", "sudo du ", "ls ", "find ", "cat ", "mdls ", "file ", "shasum ", "grep ", "git --no-optional-locks ", "git -C ",
+	"docker system df", "brew cleanup -n", "brew autoremove --dry-run", "tmutil listlocalsnapshots", "xcrun simctl list", "go env", "yarn cache dir",
+	"pnpm store status", "pip3 cache info", "uv cache dir", "poetry cache list", "conda clean --all --dry-run", "rustup toolchain list", "pod cache list",
+	"ollama list", "huggingface-cli scan-cache", "lsof ", "pyenv versions", "vagrant box list", "minikube profile list"}
+
+func checkVerify(t *testing.T, where string, cmds []string) {
+	t.Helper()
+	for _, c := range cmds {
+		ok := false
+		for _, p := range readOnlyVerify {
+			if strings.HasPrefix(c, p) {
+				ok = true
+			}
+		}
+		bad := regexp.MustCompile(`-delete|-exec|\brm\b|--force|prune|clean(\s|$)|\bpurge\b|> `).MatchString(strings.Split(c, "|")[0])
+		if !ok || (bad && !strings.Contains(c, "--dry-run") && !strings.HasPrefix(c, "brew cleanup -n")) {
+			t.Errorf("%s: verify command is not read-only: %q", where, c)
+		}
+	}
+}
+
+func TestVerifyCommandsAreReadOnly(t *testing.T) {
+	for _, r := range catalog {
+		checkVerify(t, r.ID, r.Verify)
+	}
+	e, home := testEnv(t)
+	proj := filepath.Join(home, "p")
+	write(t, filepath.Join(proj, "package.json"), 1)
+	write(t, filepath.Join(proj, "yarn.lock"), 1)
+	write(t, filepath.Join(proj, "node_modules/x.js"), 4096)
+	if f := e.judgeArtifact(candidate{filepath.Join(proj, "node_modules"), "node_modules"}); f != nil {
+		checkVerify(t, "artifact", f.Verify)
+	}
+}
+
+func TestDuplicates(t *testing.T) {
+	e, home := testEnv(t)
+	a, b, c, l := filepath.Join(home, "a.bin"), filepath.Join(home, "sub/b.bin"), filepath.Join(home, "c.bin"), filepath.Join(home, "link.bin")
+	write(t, a, 3<<20)
+	write(t, b, 3<<20)
+	os.WriteFile(c, append(make([]byte, 3<<20-1), 1), 0o644) // same size, different content
+	os.Link(a, l)
+	var fs []large
+	for _, p := range []string{a, b, c, l} {
+		st, _ := os.Stat(p)
+		fs = append(fs, large{p, st.Size(), st.ModTime(), st.Size()})
+	}
+	got := e.duplicates(fs)
+	if len(got) != 1 {
+		t.Fatalf("want 1 duplicate group, got %d: %+v", len(got), got)
+	}
+	if n := len(got[0].Paths); n != 3 {
+		t.Errorf("group should hold a, b and the hard link (3 paths), got %v", got[0].Paths)
+	}
+	checkVerify(t, "dup", got[0].Verify)
+	only := e.duplicates([]large{fs[0], fs[3]})
+	if len(only) != 0 {
+		t.Errorf("two hard links to one file are not duplicates: %+v", only)
+	}
+}
+
+func TestNodeVersionsKeepsDefault(t *testing.T) {
+	e, home := testEnv(t)
+	for _, v := range []string{"v20.1.0", "v22.22.2"} {
+		write(t, filepath.Join(home, ".nvm/versions/node", v, "bin/node"), 4096)
+	}
+	write(t, filepath.Join(home, ".nvm/versions/node/v20.1.0/lib/node_modules/typescript/package.json"), 10)
+	os.WriteFile(filepath.Join(home, ".nvm/alias/default"), []byte("22.22.2\n"), 0o644)
+	os.MkdirAll(filepath.Join(home, ".nvm/alias"), 0o755)
+	os.WriteFile(filepath.Join(home, ".nvm/alias/default"), []byte("22.22.2\n"), 0o644)
+	got := e.nodeVersions()
+	for _, f := range got {
+		if strings.Contains(f.Title, "v22.22.2") {
+			t.Errorf("the default version must not be reported: %s", f.Title)
+		}
+	}
+	found := false
+	for _, f := range got {
+		if strings.Contains(f.Title, "v20.1.0") {
+			found = true
+			if !contains(f.Risks, "global npm packages") {
+				t.Errorf("missing global package risk: %v", f.Risks)
+			}
+		}
+	}
+	if !found {
+		t.Error("v20.1.0 should be reported")
 	}
 }

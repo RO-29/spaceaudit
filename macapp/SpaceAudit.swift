@@ -23,6 +23,10 @@ struct Finding: Codable, Identifiable, Hashable {
     let restore: String?
     let notes: [String]?
     let partial: Bool?
+    let needsSudo: Bool?
+    var sizeKey: Int64 { bytes }
+    var levelRank: Int { ["safe": 0, "review": 1, "risky": 2][safety] ?? 3 }
+    var actionable: Bool { safety != "keep" && !commands.isEmpty }
 }
 
 struct Volume: Codable { let mount: String; let total: Int64; let used: Int64; let available: Int64 }
@@ -57,6 +61,7 @@ final class Scanner: ObservableObject {
     @Published var running = false
     @Published var progress = ""
     @Published var error: String?
+    @Published var started = Date()
 
     var cli: URL {
         if let u = Bundle.main.url(forResource: "spaceaudit", withExtension: nil) { return u }
@@ -64,7 +69,7 @@ final class Scanner: ObservableObject {
     }
 
     func scan(quick: Bool) {
-        running = true; error = nil; progress = "Starting the read-only scan"
+        running = true; error = nil; progress = "Starting the read-only scan"; started = Date()
         let exe = cli
         Task.detached {
             let p = Process()
@@ -99,12 +104,25 @@ final class Scanner: ObservableObject {
     }
 
     // Runs the CLI to write a report file. The CLI refuses to overwrite a file it did not write.
-    func export(_ kind: String, to url: URL) {
-        let p = Process()
-        p.executableURL = cli
-        p.arguments = [kind, "-o", url.path, "--no-open"]
-        try? p.run(); p.waitUntilExit()
-        if kind == "html" { NSWorkspace.shared.open(url) } else { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    func export(_ kind: String, to url: URL, quick: Bool = false) {
+        running = true; progress = "Writing the \(kind) report"; started = Date()
+        let exe = cli
+        Task.detached {
+            let p = Process()
+            p.executableURL = exe
+            p.arguments = [kind, "-o", url.path, "--no-open"] + (quick ? ["--quick"] : [])
+            try? p.run(); p.waitUntilExit()
+            await MainActor.run {
+                self.running = false
+                if kind == "html" { NSWorkspace.shared.open(url) } else { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            }
+        }
+    }
+
+    // A new file in the temporary folder, so the guard against overwrites never blocks it.
+    func openHTML() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("spaceaudit-\(Int(Date().timeIntervalSince1970)).html")
+        export("html", to: url)
     }
 }
 
@@ -119,6 +137,22 @@ extension JSONDecoder.DateDecodingStrategy {
     }
 }
 
+// The plan runs only verify lines. Cleanup commands stay comments until the user edits them.
+func planText(_ fs: [Finding]) -> String {
+    var s = "#!/bin/sh\n# spaceaudit plan: \(fs.count) items, \(human(fs.reduce(0) { $0 + $1.bytes })).\n"
+    s += "# Running this file runs only the verify commands. Uncomment a cleanup command only after you check it.\n"
+    for f in fs {
+        s += "\n# --- [\(f.safety)] \(f.title) (\(human(f.bytes)))\n"
+        f.blockers.forEach { s += "# BLOCKER: \($0)\n" }
+        f.risks.forEach { s += "# risk: \($0)\n" }
+        s += "echo '== \(f.title.replacingOccurrences(of: "'", with: ""))'\n"
+        f.verify.forEach { s += "\($0)\n" }
+        f.commands.forEach { s += "# \($0.replacingOccurrences(of: "\n", with: "\n# "))\n" }
+        if let r = f.restore, !r.isEmpty { s += "# restore: \(r)\n" }
+    }
+    return s
+}
+
 func copy(_ lines: [String]) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
@@ -128,14 +162,17 @@ struct ContentView: View {
     @StateObject var scanner = Scanner()
     @State var level = "all"
     @State var search = ""
-    @State var selection: Finding.ID?
+    @State var selection = Set<Finding.ID>()
+    @State var order = [KeyPathComparator(\Finding.levelRank), KeyPathComparator(\Finding.sizeKey, order: .reverse)]
 
     var filtered: [Finding] {
         (scanner.report?.findings ?? []).filter { f in
             (level == "all" || f.safety == level) &&
             (search.isEmpty || (f.title + " " + f.paths.joined(separator: " ")).localizedCaseInsensitiveContains(search))
-        }
+        }.sorted(using: order)
     }
+    var chosen: [Finding] { (scanner.report?.findings ?? []).filter { selection.contains($0.id) } }
+    var partialCount: Int { (scanner.report?.findings ?? []).filter { $0.partial == true }.count }
 
     var body: some View {
         NavigationSplitView {
@@ -163,22 +200,41 @@ struct ContentView: View {
         } content: {
             VStack(spacing: 0) {
                 header
-                Table(filtered, selection: $selection) {
-                    TableColumn("Level") { f in
+                if partialCount > 0 {
+                    HStack {
+                        Image(systemName: "lock.shield").foregroundStyle(.orange)
+                        Text("macOS hid some folders from \(partialCount) findings, so their sizes are too small. Give SpaceAudit Full Disk Access, then scan again.").font(.callout)
+                        Spacer()
+                        Button("Open Settings") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!) }
+                    }.padding(10).background(Color.orange.opacity(0.12)).padding(.horizontal, 12).padding(.bottom, 8)
+                }
+                Table(filtered, selection: $selection, sortOrder: $order) {
+                    TableColumn("Level", value: \.levelRank) { f in
                         Text(f.safety.uppercased()).font(.caption.bold()).foregroundStyle(color(f.safety))
                     }.width(64)
-                    TableColumn("Size") { f in Text(human(f.bytes)).monospacedDigit() }.width(80)
-                    TableColumn("Recommendation") { f in
-                        HStack { if !f.blockers.isEmpty { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red) }; Text(f.title).lineLimit(1) }
+                    TableColumn("Size", value: \.sizeKey) { f in Text(human(f.bytes)).monospacedDigit() }.width(80)
+                    TableColumn("Recommendation", value: \.title) { f in
+                        HStack {
+                            if !f.blockers.isEmpty { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).help(f.blockers[0]) }
+                            if f.needsSudo == true { Image(systemName: "lock.fill").foregroundStyle(.secondary).help("Needs sudo") }
+                            Text(f.title).lineLimit(1)
+                        }
                     }
-                    TableColumn("Category") { f in Text(f.category).foregroundStyle(.secondary) }.width(150)
+                    TableColumn("Category", value: \.category) { f in Text(f.category).foregroundStyle(.secondary) }.width(150)
                 }
+                if !selection.isEmpty { planBar }
             }
             .searchable(text: $search, prompt: "Search title or path")
             .navigationSplitViewColumnWidth(min: 460, ideal: 620)
         } detail: {
-            if let id = selection, let f = scanner.report?.findings.first(where: { $0.id == id }) {
+            if selection.count == 1, let id = selection.first, let f = scanner.report?.findings.first(where: { $0.id == id }) {
                 DetailView(f: f)
+            } else if selection.count > 1 {
+                VStack(spacing: 10) {
+                    Image(systemName: "checklist").font(.system(size: 44)).foregroundStyle(.secondary)
+                    Text("\(selection.count) items · \(human(chosen.reduce(0) { $0 + $1.bytes }))").font(.title3.bold())
+                    Text("Use the plan bar to copy or save a plan. A plan runs only the verify commands.").foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.padding()
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "internaldrive").font(.system(size: 44)).foregroundStyle(.secondary)
@@ -191,7 +247,8 @@ struct ContentView: View {
             ToolbarItemGroup {
                 Button { scanner.scan(quick: false) } label: { Label("Full scan", systemImage: "arrow.clockwise") }.disabled(scanner.running)
                 Button { scanner.scan(quick: true) } label: { Label("Quick scan", systemImage: "hare") }.disabled(scanner.running)
-                Button { save("html", "spaceaudit-report.html") } label: { Label("HTML report", systemImage: "doc.richtext") }.disabled(scanner.running)
+                Button { scanner.openHTML() } label: { Label("Open HTML report", systemImage: "safari") }.disabled(scanner.running)
+                Button { save("html", "spaceaudit-report.html") } label: { Label("Save HTML report", systemImage: "doc.richtext") }.disabled(scanner.running)
                 Button { save("script", "spaceaudit-review.sh") } label: { Label("Review script", systemImage: "terminal") }.disabled(scanner.running)
             }
         }
@@ -199,8 +256,11 @@ struct ContentView: View {
             if scanner.running {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("Scanning (read-only)").font(.headline)
+                    Text("Working (read-only)").font(.headline)
                     Text(scanner.progress).foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text("\(Int(ctx.date.timeIntervalSince(scanner.started)))s elapsed. A full scan of a large home folder takes some minutes.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }.padding(28).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
         }
@@ -217,6 +277,7 @@ struct ContentView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("\(human(v.available)) free").font(.title2.bold())
                     Text("of \(human(v.total))").foregroundStyle(.secondary)
+                    Text("· scanned \(r.generatedAt.formatted(.relative(presentation: .named)))").foregroundStyle(.secondary).font(.caption)
                     Spacer()
                     Text("safe \(human(t.safe))").foregroundStyle(.green)
                     Text("review \(human(t.review))").foregroundStyle(.orange)
@@ -232,6 +293,25 @@ struct ContentView: View {
                 Text("No scan yet").foregroundStyle(.secondary)
             }
         }.padding(12)
+    }
+
+    var planBar: some View {
+        HStack {
+            Text("\(chosen.count) selected · \(human(chosen.reduce(0) { $0 + $1.bytes }))").bold()
+            if chosen.contains(where: { !$0.blockers.isEmpty }) { Text("some are blocked").foregroundStyle(.red).font(.caption) }
+            Spacer()
+            Button("Copy verify") { copy(chosen.flatMap(\.verify)) }
+            Button("Copy commands") { copy(chosen.filter(\.actionable).flatMap(\.commands)) }
+            Button("Save plan…") {
+                let panel = NSSavePanel(); panel.nameFieldStringValue = "spaceaudit-plan.sh"
+                if panel.runModal() == .OK, let url = panel.url {
+                    // A user-chosen new file; the save panel already asked before replacing one.
+                    try? planText(chosen.filter(\.actionable)).data(using: .utf8)?.write(to: url)
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }.buttonStyle(.borderedProminent)
+            Button("Clear") { selection.removeAll() }
+        }.padding(10).background(.bar)
     }
 
     func save(_ kind: String, _ name: String) {

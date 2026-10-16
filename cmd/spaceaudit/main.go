@@ -13,6 +13,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/RO-29/spaceaudit/internal/fsx"
+	"github.com/RO-29/spaceaudit/internal/model"
 	"github.com/RO-29/spaceaudit/internal/report"
 	"github.com/RO-29/spaceaudit/internal/scan"
 	"github.com/RO-29/spaceaudit/internal/tui"
@@ -27,6 +28,7 @@ Usage:
   spaceaudit md    [-o file]   Markdown report
   spaceaudit json  [-o file]   machine-readable report (the Mac app reads this)
   spaceaudit script [-o file]  review script: every command is commented out
+  spaceaudit plan  [-o file]   plan for --level items: runs only verify lines, cleanup lines stay comments
   spaceaudit rules             print the rule catalog as Markdown
   spaceaudit version
 
@@ -54,6 +56,7 @@ func main() {
 	noDocker := fs.Bool("no-docker", false, "do not ask the Docker daemon")
 	jobs := fs.Int("jobs", 8, "parallel workers")
 	noOpen := fs.Bool("no-open", false, "do not open the HTML report after writing it")
+	levels := fs.String("level", "", "only these levels, comma separated: safe,review,risky,keep (plan defaults to safe)")
 	fs.StringVar(&home, "home", home, "home folder to scan")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	_ = fs.Parse(args)
@@ -87,7 +90,7 @@ func main() {
 		}
 		return
 	}
-	known := map[string]string{"scan": "", "html": "spaceaudit-report.html", "md": "spaceaudit-report.md", "json": "", "script": "spaceaudit-review.sh"}
+	known := map[string]string{"scan": "", "html": "spaceaudit-report.html", "md": "spaceaudit-report.md", "json": "", "script": "spaceaudit-review.sh", "plan": "spaceaudit-plan.sh"}
 	def, ok := known[cmd]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
@@ -97,6 +100,23 @@ func main() {
 	r := scan.Run(o)
 	if tty {
 		fmt.Fprint(os.Stderr, "\r\033[K")
+	}
+	if *levels == "" && cmd == "plan" {
+		*levels = "safe"
+	}
+	if *levels != "" {
+		want := map[string]bool{}
+		for _, l := range strings.Split(*levels, ",") {
+			want[strings.TrimSpace(l)] = true
+		}
+		var keep []model.Finding
+		for _, f := range r.Findings {
+			if want[string(f.Safety)] && (cmd != "plan" || len(f.Blockers) == 0) {
+				keep = append(keep, f)
+			}
+		}
+		r.Findings = keep
+		r.Totals = scan.Totals(keep)
 	}
 	path := *out
 	if path == "" {
@@ -125,6 +145,8 @@ func main() {
 		report.Markdown(w, r)
 	case "script":
 		report.Script(w, r)
+	case "plan":
+		report.Plan(w, r)
 	case "html":
 		if err := report.HTML(w, r); err != nil {
 			fail(err)

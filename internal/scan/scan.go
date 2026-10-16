@@ -44,7 +44,9 @@ func Run(o Options) model.Report {
 	o.Progress("Checking app caches")
 	findings = append(findings, e.cacheChildren(claimed)...)
 	findings = append(findings, e.webCaches(claimed)...)
+	findings = append(findings, e.sandboxWebCaches(claimed)...)
 	findings = append(findings, e.editorLeftovers()...)
+	findings = append(findings, e.nodeVersions()...)
 	o.Progress("Asking Homebrew and Docker (dry run only)")
 	findings = append(findings, e.homebrew()...)
 	findings = append(findings, e.containers()...)
@@ -60,6 +62,8 @@ func Run(o Options) model.Report {
 		o.Progress("Judging project build folders and worktrees")
 		findings = append(findings, e.projectFindings(w.cands)...)
 		findings = append(findings, e.worktreeFindings(w.worktrees)...)
+		o.Progress("Hashing large files to find duplicates")
+		findings = append(findings, e.duplicates(w.dups)...)
 		var covered []string
 		for _, f := range findings {
 			covered = append(covered, f.Paths...)
@@ -246,6 +250,9 @@ func ownerIsMe(st os.FileInfo) bool {
 	sys, ok := st.Sys().(*syscall.Stat_t)
 	return ok && int(sys.Uid) == os.Getuid()
 }
+
+// Totals is the exported form of totals, for filtered reports.
+func Totals(fs []model.Finding) model.Totals { return totals(fs) }
 
 // Catalog exposes the static rules for documentation.
 func Catalog() []Rule { return catalog }

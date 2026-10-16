@@ -16,6 +16,8 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 | Symbolic links | A walk follows a link and counts the target, or a delete follows it. | Never follows links. Notes the count, because `rm -rf` removes links, not targets. |
 | Paths with spaces, quotes or newlines | A generated command breaks or deletes the wrong path. | Single-quotes every path. The Finder "move to Trash" alternative is omitted when a path holds a quote. |
 
+| Identical copies of a large file | Space used more than once. | SHA-256 on files of 64 MB or more. Hard links to one file are not reported as duplicates. iCloud placeholders are skipped, because reading them downloads them. |
+
 ## Space that does not come back
 
 | Case | Why | What spaceaudit does |
@@ -31,7 +33,8 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 |---|---|---|
 | An app writes its cache while you delete it | Corrupt cache, crash, or the delete is incomplete. | Takes one `lsof` snapshot and blocks any finding that an open file touches. A safe finding moves to review. |
 | A dev server runs in a project | Deleting `node_modules` or `.next` breaks the running server. | The project and its git root count as in use when any process has a file open there. |
-| A project that you edited recently | You are probably still working on it. | A project with a change in the last 48 hours (`--active`) is blocked. |
+| A project that you edited recently | You are probably still working on it. | Blocked when a project file (6 levels deep, outside build folders) or the git index, HEAD or reflog changed in the last 48 hours (`--active`). |
+| Uncommitted changes in the repo | Work in progress. | Blocked, with the file count. |
 | An app that runs now | It is in use, whatever Spotlight says. | Never reported as unused. |
 
 ## Data that looks regenerable but is not
@@ -47,6 +50,10 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 | `~/.m2/repository` | Artifacts from `mvn install` exist only here. | Review. |
 | Go module cache | Read-only files: `rm -rf` fails. | Uses `go clean -modcache`. |
 | Git worktrees | Uncommitted changes and unpushed commits are lost. `rm` leaves stale worktree records. | Checks status, upstream and remote branches. Uses `git worktree remove`, which refuses a dirty tree. Risky when the main repo is gone. |
+| Git-ignored files in a clean worktree (`.env`, `terraform.tfstate`, local config) | `git status` does not show them, and a delete loses them. | Lists ignored files that are not build output and moves the worktree to review. |
+| Claude Code `~/.claude/projects` | Each project folder also holds `memory/`. | The command removes only old `.jsonl` transcripts and skips `memory/`. |
+| Chrome on-device AI model | Chrome downloads the model again after a plain delete. | The command is the Chrome setting that deletes the model and stops the download. |
+| Node.js versions | Global npm packages live inside each version. | Keeps the default and current version, and counts global packages in the others. |
 | Xcode archives | They hold the dSYMs that decode crash reports of shipped builds. | Risky. |
 | iPhone backups | It can be the only backup of a device. | Risky. Points to Finder > Manage Backups. |
 | Cursor `state.vscdb` | Holds all chat history. | Risky. |
@@ -64,6 +71,10 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 | Rust toolchains | Projects that pin a version in rust-toolchain.toml. | Review, with `rustup toolchain list` as the verify step. |
 | Android SDK | React Native, Flutter and Gradle Android builds. | Review. |
 | Simulator caches in `/Library` | Needs root. | Marked sudo. |
+
+## Verify commands
+
+Every verify command must only read. `npm cache verify` looks like a check but garbage-collects the cache, and `git status` can rewrite `.git/index`. The tool uses `du` for npm and `git --no-optional-locks` for git. A test checks every verify command.
 
 ## Last-used dates
 

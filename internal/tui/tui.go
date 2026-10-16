@@ -3,6 +3,9 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"github.com/RO-29/spaceaudit/internal/fsx"
 	"github.com/RO-29/spaceaudit/internal/model"
 	"github.com/RO-29/spaceaudit/internal/probe"
+	"github.com/RO-29/spaceaudit/internal/report"
 	"github.com/RO-29/spaceaudit/internal/scan"
 )
 
@@ -48,10 +52,17 @@ type Model struct {
 	w, h     int
 	msg      string
 	ch       chan string
+	marked   map[string]bool
+	sortBy   int
+	help     bool
 }
 
+var sorts = []string{"safety", "size", "oldest"}
+
 // New makes the TUI model. The scan starts when the program starts.
-func New(o scan.Options) Model { return Model{opt: o, start: time.Now(), ch: make(chan string, 16)} }
+func New(o scan.Options) Model {
+	return Model{opt: o, start: time.Now(), ch: make(chan string, 16), marked: map[string]bool{}}
+}
 
 func (m Model) Init() tea.Cmd {
 	o := m.opt
@@ -78,6 +89,12 @@ func (m *Model) filter() {
 			continue
 		}
 		m.view = append(m.view, f)
+	}
+	switch sorts[m.sortBy] {
+	case "size":
+		sort.SliceStable(m.view, func(i, j int) bool { return m.view[i].Bytes > m.view[j].Bytes })
+	case "oldest":
+		sort.SliceStable(m.view, func(i, j int) bool { return m.view[i].Modified.Before(m.view[j].Modified) })
 	}
 	if m.cur >= len(m.view) {
 		m.cur = max(0, len(m.view)-1)
@@ -124,9 +141,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filter()
 			return m, nil
 		}
+		if m.help {
+			m.help = false
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "?":
+			m.help = true
+		case " ", "x":
+			if f, ok := m.current(); ok && f.Safety != model.Keep && len(f.Commands) > 0 {
+				m.marked[f.ID] = !m.marked[f.ID]
+				if !m.marked[f.ID] {
+					delete(m.marked, f.ID)
+				}
+				if m.cur < len(m.view)-1 {
+					m.cur++
+				}
+			}
+		case "A":
+			for _, f := range m.view {
+				if f.Safety == model.Safe && len(f.Blockers) == 0 && len(f.Commands) > 0 {
+					m.marked[f.ID] = true
+				}
+			}
+		case "u":
+			m.marked = map[string]bool{}
+		case "s":
+			m.sortBy = (m.sortBy + 1) % len(sorts)
+			m.filter()
+		case "p":
+			plan := m.planText()
+			if plan == "" {
+				return m, func() tea.Msg { return flash("Mark items with space first.") }
+			}
+			return m, func() tea.Msg {
+				if _, err := probe.RunInput(5*time.Second, []byte(plan), "pbcopy"); err != nil {
+					return flash("Copy failed: " + err.Error())
+				}
+				return flash("Copied the plan. The cleanup commands in it are comments.")
+			}
+		case "w":
+			plan := m.planText()
+			if plan == "" {
+				return m, func() tea.Msg { return flash("Mark items with space first.") }
+			}
+			return m, func() tea.Msg { return flash(writePlan(plan)) }
 		case "j", "down":
 			if m.detail {
 				m.scroll++
@@ -143,7 +204,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cur = 0
 		case "G":
 			m.cur = max(0, len(m.view)-1)
-		case "enter", " ", "l", "right":
+		case "enter", "l", "right":
 			m.detail = !m.detail
 			m.scroll = 0
 		case "esc", "h", "left":
@@ -173,6 +234,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) selected() []model.Finding {
+	var out []model.Finding
+	for _, f := range m.rep.Findings {
+		if m.marked[f.ID] {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// planText runs verify lines and keeps every cleanup command as a comment.
+func (m Model) planText() string {
+	fs := m.selected()
+	if len(fs) == 0 {
+		return ""
+	}
+	r := *m.rep
+	r.Findings = fs
+	var b strings.Builder
+	report.Plan(&b, r)
+	return b.String()
+}
+
+// writePlan creates a new file and never replaces one.
+func writePlan(plan string) string {
+	name := "spaceaudit-plan-" + time.Now().Format("20060102-150405") + ".sh"
+	f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "Cannot write the plan: " + err.Error()
+	}
+	defer f.Close()
+	if _, err := f.WriteString(plan); err != nil {
+		return "Cannot write the plan: " + err.Error()
+	}
+	wd, _ := os.Getwd()
+	return "Wrote " + filepath.Join(wd, name) + ". Read it before you run it."
 }
 
 func (m Model) current() (model.Finding, bool) {
@@ -231,12 +330,31 @@ func (m Model) View() string {
 	}
 	bodyH := max(5, m.h-7)
 	var body string
-	if m.detail {
+	if m.help {
+		body = box.Render(strings.Join([]string{
+			title.Render("Keys"), "",
+			"↑ ↓ / j k     move            enter  details      esc  back",
+			"space / x     mark for plan   A      mark visible safe items   u  unmark all",
+			"tab / 1-5     level filter    /      search       s    sort (safety, size, oldest)",
+			"c             copy command    v      copy verify  o    show in Finder",
+			"p             copy plan       w      write plan file (a new file, never overwritten)",
+			"", dim.Render("spaceaudit runs no cleanup command. A plan runs only the verify lines; the cleanup lines are comments."),
+			dim.Render("Press any key to close."),
+		}, "\n"))
+	} else if m.detail {
 		body = m.detailView(bodyH)
 	} else {
 		body = m.listView(bodyH)
 	}
-	help := dim.Render("↑↓ move  enter details  tab/1-5 level  / search  c copy command  v copy verify  o Finder  q quit")
+	sel := m.selected()
+	var selBytes int64
+	for _, f := range sel {
+		selBytes += f.Bytes
+	}
+	help := dim.Render("space mark  p copy plan  w write plan  enter details  tab level  / search  s sort:" + sorts[m.sortBy] + "  ? help  q quit")
+	if len(sel) > 0 {
+		help = lipgloss.NewStyle().Foreground(cKeep).Bold(true).Render(fmt.Sprintf("%d marked · %s", len(sel), fsx.Human(selBytes))) + "  " + help
+	}
 	if m.msg != "" {
 		help = lipgloss.NewStyle().Foreground(cReview).Render(m.msg)
 	}
@@ -261,18 +379,34 @@ func (m *Model) listView(h int) string {
 		if len(f.Blockers) > 0 {
 			flag = lipgloss.NewStyle().Foreground(cRisky).Render("!")
 		}
-		w := max(20, m.w-24)
+		mark := "  "
+		if m.marked[f.ID] {
+			mark = lipgloss.NewStyle().Foreground(cKeep).Bold(true).Render("● ")
+		}
+		w := max(20, m.w-36)
 		t := f.Title
 		if len([]rune(t)) > w {
 			t = string([]rune(t)[:w-1]) + "…"
 		}
-		line := fmt.Sprintf("%s %9s %s %s", b, fsx.Human(f.Bytes), flag, t)
+		bar := sizeBar(f.Bytes, m.view[0].Bytes, 8)
+		line := fmt.Sprintf("%s%s %9s %s %s %s", mark, b, fsx.Human(f.Bytes), dim.Render(bar), flag, t)
 		if i == m.cur {
 			line = sel.Render(line)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func sizeBar(b, maxB int64, w int) string {
+	if maxB <= 0 {
+		return strings.Repeat(" ", w)
+	}
+	n := int(float64(w) * float64(b) / float64(maxB))
+	if n < 1 && b > 0 {
+		n = 1
+	}
+	return strings.Repeat("▇", min(n, w)) + strings.Repeat(" ", w-min(n, w))
 }
 
 func (m Model) detailView(h int) string {

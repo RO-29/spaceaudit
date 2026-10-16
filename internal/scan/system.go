@@ -269,7 +269,7 @@ func (e *Env) largeFiles(ls []large, bundles []string, covered []string) []model
 	for _, b := range bundles {
 		u := e.measure(b)
 		if u.Bytes >= e.Opt.LargeBytes {
-			ls = append(ls, large{b, u.Bytes, u.Newest})
+			ls = append(ls, large{b, u.Bytes, u.Newest, u.Bytes})
 		}
 	}
 	sort.Slice(ls, func(i, j int) bool { return ls[i].bytes > ls[j].bytes })

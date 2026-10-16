@@ -80,15 +80,19 @@ var bundleExt = []string{".photoslibrary", ".musiclibrary", ".tvlibrary", ".app"
 type candidate struct{ path, kind string }
 
 type large struct {
-	path  string
-	bytes int64
-	mod   time.Time
+	path     string
+	bytes    int64
+	mod      time.Time
+	apparent int64
 }
+
+const dupMin = 64 << 20 // files at or above this size are checked for duplicates
 
 type walkResult struct {
 	cands     []candidate
 	worktrees []string
 	larges    []large
+	dups      []large
 	bundles   []string
 	top       map[string]int64 // first and second level folders of home
 	denied    map[string]int
@@ -116,7 +120,7 @@ func (e *Env) walkHome() walkResult {
 					res.top[p] += sys.Blocks * 512
 					res.total += sys.Blocks * 512
 					if sys.Blocks*512 >= e.Opt.LargeBytes {
-						res.larges = append(res.larges, large{p, sys.Blocks * 512, info.ModTime()})
+						res.larges = append(res.larges, large{p, sys.Blocks * 512, info.ModTime(), info.Size()})
 					}
 					mu.Unlock()
 				}
@@ -185,7 +189,11 @@ func (e *Env) walkHome() walkResult {
 				local.total += b
 				local.top[second(e.Home, p)] += b
 				if b >= e.Opt.LargeBytes {
-					local.larges = append(local.larges, large{p, b, info.ModTime()})
+					local.larges = append(local.larges, large{p, b, info.ModTime(), info.Size()})
+				}
+				// iCloud placeholders are skipped: reading one to hash it would download it.
+				if info.Size() >= dupMin && d.Type().IsRegular() && sys.Flags&0x40000000 == 0 {
+					local.dups = append(local.dups, large{p, b, info.ModTime(), info.Size()})
 				}
 				return nil
 			})
@@ -193,6 +201,7 @@ func (e *Env) walkHome() walkResult {
 			res.cands = append(res.cands, local.cands...)
 			res.worktrees = append(res.worktrees, local.worktrees...)
 			res.larges = append(res.larges, local.larges...)
+			res.dups = append(res.dups, local.dups...)
 			res.bundles = append(res.bundles, local.bundles...)
 			res.total += local.total
 			for k, v := range local.top {
@@ -260,7 +269,7 @@ func (e *Env) projectFindings(cands []candidate) []model.Finding {
 		}
 		a := artifactByName[k]
 		r := Rule{ID: "artifact-" + k, Category: catBuild, Title: k + " folders (" + strconv.Itoa(len(paths)) + ")", Safety: a.Safety,
-			Reasons: []string{a.Reason}, Verify: []string{"find \"$HOME\" -name '" + k + "' -type d -prune -not -path '*/Library/*' | head"},
+			Reasons: []string{a.Reason}, Verify: []string{"find \"$HOME\" -name '" + k + "' -type d -prune -not -path '*/Library/*' -not -path '*/.*/*' | head"},
 			Commands: []string{"find \"$HOME\" -name '" + k + "' -type d -prune -not -path '*/Library/*' -not -path '*/.*/*' -exec rm -rf -- {} +"}, Restore: a.Restore}
 		f := e.build(r, paths, u)
 		out = append(out, f)
@@ -320,6 +329,14 @@ func (e *Env) judgeArtifact(c candidate) *model.Finding {
 		risks = append(risks, "Packages that you installed by hand with pip and did not write to a requirements file are lost.")
 	}
 	activity := projectActivity(proj)
+	if top != "" {
+		if g := gitActivity(top); g.After(activity) {
+			activity = g
+		}
+		if r := e.repo(top); r.dirty > 0 {
+			blockers = append(blockers, strconv.Itoa(r.dirty)+" files in "+e.Pretty(top)+" have uncommitted changes, so you are probably still working on it.")
+		}
+	}
 	if !activity.IsZero() {
 		age := e.Now.Sub(activity)
 		reasons = append(reasons, "Project files changed "+Ago(e.Now, activity)+".")
@@ -351,7 +368,7 @@ func (e *Env) judgeArtifact(c candidate) *model.Finding {
 		ID: id("artifact", c.path), Rule: "artifact-" + c.kind, Category: catBuild, Title: c.kind + " in " + e.Pretty(proj),
 		Paths: []string{c.path}, Bytes: u.Bytes, Files: u.Files, Safety: safety, Confidence: "high", Modified: activity,
 		Reasons: reasons, Risks: risks, Blockers: blockers, Commands: cmds,
-		Verify:  []string{"ls " + e.Q(proj), "git -C " + e.Q(scope) + " status --short | head"},
+		Verify:  []string{"ls " + e.Q(proj), "git --no-optional-locks -C " + e.Q(scope) + " status --short | head"},
 		Restore: "cd " + e.Q(proj) + " && " + a.Restore,
 	}
 	if t := Trash(c.path); t != "" {
@@ -439,6 +456,21 @@ func precious(wt string) []string {
 	return keep
 }
 
+// gitActivity is the newest change to git state: staging, checkout, commit or fetch.
+func gitActivity(top string) time.Time {
+	var newest time.Time
+	gitDir := filepath.Join(top, ".git")
+	if b, err := os.ReadFile(gitDir); err == nil {
+		gitDir = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(b)), "gitdir:"))
+	}
+	for _, f := range []string{"index", "HEAD", "logs/HEAD", "FETCH_HEAD"} {
+		if st, err := os.Stat(filepath.Join(gitDir, f)); err == nil && st.ModTime().After(newest) && st.ModTime().Before(time.Now().Add(time.Hour)) {
+			newest = st.ModTime()
+		}
+	}
+	return newest
+}
+
 // projectActivity is the newest change to a project file, outside artifact folders and .git.
 func projectActivity(proj string) time.Time {
 	var newest time.Time
@@ -464,7 +496,7 @@ func projectActivity(proj string) time.Time {
 			}
 		}
 	}
-	walk(proj, 3)
+	walk(proj, 6)
 	return newest
 }
 
@@ -543,7 +575,7 @@ func (e *Env) worktreeFindings(dirs []string) []model.Finding {
 			ID: id("worktree", wt), Rule: "git-worktree", Category: catDev, Title: "Git worktree " + e.Pretty(wt),
 			Paths: []string{wt}, Bytes: u.Bytes, Files: u.Files, Safety: safety, Confidence: "high", Modified: u.Newest,
 			Reasons: reasons, Risks: risks, Blockers: blockers,
-			Verify:   []string{"git -C " + e.Q(wt) + " status", "git -C " + e.Q(wt) + " log --oneline @{u}..HEAD"},
+			Verify:   []string{"git --no-optional-locks -C " + e.Q(wt) + " status --short --ignored", "git -C " + e.Q(wt) + " log --oneline @{u}..HEAD"},
 			Commands: []string{"git -C " + e.Q(main) + " worktree remove " + e.Q(wt)},
 			Notes:    []string{"git worktree remove refuses when there are uncommitted changes. Do not use rm, because it leaves stale worktree records. Run git worktree prune after a manual delete."},
 			Restore:  "git -C " + e.Q(main) + " worktree add " + e.Q(wt) + " " + branch,
