@@ -70,6 +70,13 @@ func (e *Env) build(r Rule, paths []string, u fsx.Usage) model.Finding {
 
 // annotate adds the measurement caveats that change how much space a delete frees.
 func (e *Env) annotate(f *model.Finding, u fsx.Usage) {
+	if f.Allocated == 0 {
+		f.Allocated = u.Bytes
+	}
+	if u.Cloned > 0 && u.Freeable >= 0 {
+		f.Notes = append(f.Notes, fsx.Human(u.Cloned)+" of "+fsx.Human(u.Bytes)+" is shared with APFS clones, so a delete frees about "+fsx.Human(u.Freeable)+". The size shown is that smaller number.")
+		f.Bytes = u.Freeable
+	}
 	if u.TimedOut {
 		f.Partial = true
 		f.Notes = append(f.Notes, "Measuring stopped after 2 minutes because macOS held a folder (a privacy prompt or a cloud folder). The real size can be larger.")
@@ -158,6 +165,7 @@ func (e *Env) staticRules() ([]model.Finding, []string) {
 			return nil
 		}
 		f := e.build(j.r, j.paths, u)
+		f.OlderDays = j.r.OlderDays
 		return &f
 	})
 	out = append(out, res...)
@@ -178,6 +186,8 @@ func measureAll(paths []string) fsx.Usage {
 		t.Dataless += u.Dataless
 		t.Shared += u.Shared
 		t.Symlinks += u.Symlinks
+		t.Cloned += u.Cloned
+		t.Freeable += u.Freeable
 		if u.Newest.After(t.Newest) {
 			t.Newest = u.Newest
 		}

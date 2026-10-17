@@ -55,6 +55,22 @@ func color(_ s: String) -> Color {
     }
 }
 
+// Splits the stderr stream into whole lines. The read handler runs on one serial queue.
+final class LineBuffer: @unchecked Sendable {
+    private var pending = ""
+    func add(_ d: Data) -> [String] {
+        pending += String(decoding: d, as: UTF8.self)
+        var out: [String] = []
+        while let nl = pending.firstIndex(of: "\n") { out.append(String(pending[..<nl])); pending = String(pending[pending.index(after: nl)...]) }
+        return out
+    }
+}
+
+struct ScanEvent: Codable { let step: Int; let steps: Int; let title: String; let detail: String?; let files: Int64?; let bytes: Int64?; let found: Int; let foundBytes: Int64 }
+
+struct RecheckItem: Codable, Identifiable { let id: String; let title: String; let safety: String; let category: String; let before: Int64; let now: Int64; let status: String; let note: String? }
+struct RecheckReport: Codable { let checkedAt: Date; let baseScanAt: Date; let volumeBefore: Volume; let volumeNow: Volume; let freed: Int64; let items: [RecheckItem] }
+
 @MainActor
 final class Scanner: ObservableObject {
     @Published var report: Report?
@@ -62,28 +78,59 @@ final class Scanner: ObservableObject {
     @Published var progress = ""
     @Published var error: String?
     @Published var started = Date()
+    @Published var event: ScanEvent?
+    @Published var stepTitles: [Int: String] = [:]
+    @Published var files: Int64 = 0
+    @Published var bytesRead: Int64 = 0
+    @Published var currentPath = ""
+    @Published var quick = true
+    @Published var recheck: RecheckReport?
+    private var process: Process?
+    private var cancelled = false
 
     var cli: URL {
         if let u = Bundle.main.url(forResource: "spaceaudit", withExtension: nil) { return u }
         return URL(fileURLWithPath: "/usr/local/bin/spaceaudit")
     }
 
+    // A plain text log of every scan, so a scan that stops can be diagnosed.
+    nonisolated static let logURL: URL = {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/SpaceAudit")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("scan.log")
+    }()
+
+    nonisolated static func log(_ line: String) {
+        let text = "\(ISO8601DateFormatter().string(from: Date())) \(line)\n"
+        if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(Data(text.utf8)); try? h.close() }
+        else { try? Data(text.utf8).write(to: logURL) }
+    }
+
+    func cancel() { cancelled = true; process?.terminate() }
+
     func scan(quick: Bool) {
         running = true; error = nil; progress = "Starting the read-only scan"; started = Date()
+        event = nil; stepTitles = [:]; files = 0; bytesRead = 0; currentPath = ""; self.quick = quick; cancelled = false
         let exe = cli
-        Task.detached {
-            let p = Process()
-            p.executableURL = exe
-            p.arguments = ["json", "-o", "-"] + (quick ? ["--quick"] : [])
-            let out = Pipe(), err = Pipe()
-            p.standardOutput = out; p.standardError = err
-            err.fileHandleForReading.readabilityHandler = { h in
-                let s = String(decoding: h.availableData, as: UTF8.self)
-                if let line = s.split(separator: "\n").last(where: { $0.hasPrefix("progress: ") }) {
-                    let text = String(line.dropFirst(10))
-                    Task { @MainActor in self.progress = text }
+        Scanner.log("scan start quick=\(quick)")
+        let p = Process()
+        p.executableURL = exe
+        p.arguments = ["json", "-o", "-"] + (quick ? ["--quick"] : [])
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out; p.standardError = err
+        process = p
+        let buf = LineBuffer()
+        err.fileHandleForReading.readabilityHandler = { h in
+            for line in buf.add(h.availableData) {
+                if line.hasPrefix("event: "), let ev = try? JSONDecoder().decode(ScanEvent.self, from: Data(line.dropFirst(7).utf8)) {
+                    Task { @MainActor in self.apply(ev) }
+                    if ev.files == nil { Scanner.log("step \(ev.step)/\(ev.steps) \(ev.title) found=\(ev.found)") }
+                } else if line.hasPrefix("progress: ") {
+                    let t = String(line.dropFirst(10)); Task { @MainActor in self.progress = t }
                 }
             }
+        }
+        Task.detached {
             do { try p.run() } catch {
                 await MainActor.run { self.error = "Cannot start \(exe.path): \(error.localizedDescription)"; self.running = false }
                 return
@@ -95,17 +142,44 @@ final class Scanner: ObservableObject {
             let result = Result { try dec.decode(Report.self, from: data) }
             await MainActor.run {
                 switch result {
-                case .success(let r): self.report = r
-                case .failure(let e): self.error = "The scan output could not be read: \(e)"
+                case .success(let r): self.report = r; Scanner.log("scan done findings=\(r.findings.count) seconds=\(Int(r.durationSec))")
+                case .failure(let e):
+                    if self.cancelled { Scanner.log("scan cancelled") } else { self.error = "The scan output could not be read: \(e)"; Scanner.log("scan failed: \(e)") }
                 }
+                self.running = false; self.process = nil
+            }
+        }
+    }
+
+    private func apply(_ ev: ScanEvent) {
+        if ev.files == nil { stepTitles[ev.step] = ev.title }
+        if let f = ev.files { files = f }
+        if let b = ev.bytes { bytesRead = b }
+        if let d = ev.detail, !d.isEmpty { currentPath = d }
+        event = ev
+    }
+
+    // Measures again only the items of the last full scan.
+    func runRecheck() {
+        running = true; progress = "Rechecking the items of the last full scan"; started = Date(); event = nil; stepTitles = [:]
+        let exe = cli
+        Task.detached {
+            let p = Process(); p.executableURL = exe; p.arguments = ["recheck", "--json"]
+            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+            try? p.run()
+            let data = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601withFractions
+            let r = try? dec.decode(RecheckReport.self, from: data)
+            await MainActor.run {
                 self.running = false
+                if let r { self.recheck = r } else { self.error = "No full scan to compare against. Run a Full scan first." }
             }
         }
     }
 
     // Runs the CLI to write a report file. The CLI refuses to overwrite a file it did not write.
     func export(_ kind: String, to url: URL, quick: Bool = false) {
-        running = true; progress = "Writing the \(kind) report"; started = Date()
+        running = true; progress = "Writing the \(kind) report"; started = Date(); event = nil; stepTitles = [:]
         let exe = cli
         Task.detached {
             let p = Process()
@@ -252,6 +326,8 @@ struct ContentView: View {
                     .help("Scan known caches and apps only (under a minute)").disabled(scanner.running)
                 Button { scanner.openHTML() } label: { Label("HTML report", systemImage: "safari").labelStyle(.titleAndIcon) }
                     .help("Write a full HTML report and open it in the browser").disabled(scanner.running)
+                Button { scanner.runRecheck() } label: { Label("Recheck", systemImage: "checkmark.arrow.trianglehead.counterclockwise") .labelStyle(.titleAndIcon) }
+                    .help("Measure again only the items of the last full scan, to see what your cleanup freed").disabled(scanner.running)
                 Menu {
                     Button("Save HTML report…") { save("html", "spaceaudit-report.html") }
                     Button("Save Markdown report…") { save("md", "spaceaudit-report.md") }
@@ -261,20 +337,21 @@ struct ContentView: View {
         }
         .overlay {
             if scanner.running {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("Working (read-only)").font(.headline)
-                    Text(scanner.progress).foregroundStyle(.secondary)
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        Text("\(Int(ctx.date.timeIntervalSince(scanner.started)))s elapsed. A full scan of a large home folder takes some minutes.").font(.caption).foregroundStyle(.secondary)
-                    }
-                }.padding(28).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+                    ScanView(scanner: scanner)
+                }.transition(.opacity)
             }
+        }
+        .sheet(isPresented: Binding(get: { scanner.recheck != nil }, set: { if !$0 { scanner.recheck = nil } })) {
+            if let r = scanner.recheck { RecheckView(r: r) { scanner.recheck = nil } }
         }
         .alert("Scan failed", isPresented: Binding(get: { scanner.error != nil }, set: { if !$0 { scanner.error = nil } })) {
             Button("OK") {}
         } message: { Text(scanner.error ?? "") }
-        .onAppear { if scanner.report == nil { scanner.scan(quick: true) } }
+        .onAppear {
+            if scanner.report == nil { scanner.scan(quick: !CommandLine.arguments.contains("--autoscan-full")) }
+        }
     }
 
     var header: some View {
@@ -377,6 +454,107 @@ struct DetailView: View {
                 }.padding(10).background(Color.gray.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
         }
+    }
+}
+
+// The scan screen: every step with its state, what is being read now, and live counts.
+struct ScanView: View {
+    @ObservedObject var scanner: Scanner
+    @State private var spin = false
+
+    var steps: Int { scanner.event?.steps ?? (scanner.quick ? 6 : 9) }
+    var current: Int { scanner.event?.step ?? 0 }
+    var fraction: Double { steps == 0 ? 0 : Double(max(0, current - 1)) / Double(steps) }
+
+    var body: some View {
+        VStack(spacing: 22) {
+            HStack(spacing: 22) {
+                ZStack {
+                    Circle().stroke(Color.secondary.opacity(0.15), lineWidth: 12)
+                    Circle().trim(from: 0, to: max(0.03, fraction))
+                        .stroke(AngularGradient(colors: [.teal, .blue, .indigo, .teal], center: .center), style: StrokeStyle(lineWidth: 12, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).animation(.easeInOut(duration: 0.6), value: fraction)
+                    Circle().trim(from: 0, to: 0.12).stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .padding(14).rotationEffect(.degrees(spin ? 360 : 0))
+                        .animation(.linear(duration: 1.6).repeatForever(autoreverses: false), value: spin)
+                    VStack(spacing: 2) {
+                        Text("\(scanner.event?.found ?? 0)").font(.system(size: 34, weight: .bold, design: .rounded)).contentTransition(.numericText())
+                        Text("found").font(.caption).foregroundStyle(.secondary)
+                        Text(human(scanner.event?.foundBytes ?? 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                }.frame(width: 150, height: 150).onAppear { spin = true }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(scanner.event == nil && scanner.stepTitles.isEmpty ? scanner.progress : "Scanning your Mac").font(.title2.bold())
+                    Text("Read-only. SpaceAudit changes nothing.").foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text("\(Int(ctx.date.timeIntervalSince(scanner.started)))s · step \(max(current, 1)) of \(steps) · \(scanner.quick ? "quick scan" : "full scan")")
+                            .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    if scanner.files > 0 {
+                        HStack(spacing: 18) {
+                            Label("\(scanner.files.formatted()) files", systemImage: "doc.on.doc").contentTransition(.numericText())
+                            Label(human(scanner.bytesRead), systemImage: "internaldrive")
+                        }.font(.callout.monospacedDigit()).padding(.top, 4)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(1...max(steps, 1), id: \.self) { i in
+                    HStack(spacing: 10) {
+                        Group {
+                            if i < current || scanner.event?.title == "Done" { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                            else if i == current { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "circle").foregroundStyle(.tertiary) }
+                        }.frame(width: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(scanner.stepTitles[i] ?? (i == current ? (scanner.event?.title ?? "") : "Waiting")).foregroundStyle(i > current ? .secondary : .primary)
+                                .fontWeight(i == current ? .semibold : .regular)
+                            if i == current, !scanner.currentPath.isEmpty {
+                                Text(scanner.currentPath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                    .id(scanner.currentPath).transition(.opacity)
+                            }
+                        }
+                    }
+                }
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+            HStack {
+                Text("A full scan of a large home folder takes some minutes. You can keep working.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel", role: .cancel) { scanner.cancel() }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(28).frame(width: 620)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .shadow(color: .black.opacity(0.18), radius: 30, y: 10)
+        .animation(.easeInOut(duration: 0.3), value: current)
+    }
+}
+
+// What changed since the last full scan, per item.
+struct RecheckView: View {
+    let r: RecheckReport
+    let close: () -> Void
+    func tint(_ s: String) -> Color { ["gone": .green, "partly gone": .green, "smaller": .green, "larger": .orange][s] ?? .secondary }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Recheck").font(.title.bold())
+            Text("Compared with the full scan of \(r.baseScanAt.formatted(date: .abbreviated, time: .shortened)).").foregroundStyle(.secondary)
+            HStack(spacing: 28) {
+                VStack(alignment: .leading) { Text("Freed by these items").font(.caption).foregroundStyle(.secondary); Text(human(r.freed)).font(.title2.bold()).foregroundStyle(.green) }
+                VStack(alignment: .leading) { Text("Free space then").font(.caption).foregroundStyle(.secondary); Text(human(r.volumeBefore.available)).font(.title2.bold()) }
+                VStack(alignment: .leading) { Text("Free space now").font(.caption).foregroundStyle(.secondary); Text(human(r.volumeNow.available)).font(.title2.bold()) }
+            }
+            Table(r.items.sorted { ($0.status == "unchanged" ? 1 : 0, -($0.before - $0.now)) < ($1.status == "unchanged" ? 1 : 0, -($1.before - $1.now)) }) {
+                TableColumn("Status") { i in Text(i.status.uppercased()).font(.caption.bold()).foregroundStyle(tint(i.status)) }.width(100)
+                TableColumn("Before") { i in Text(human(i.before)).monospacedDigit() }.width(80)
+                TableColumn("Now") { i in Text(human(i.now)).monospacedDigit() }.width(80)
+                TableColumn("Item") { i in Text(i.title).lineLimit(1).help(i.note ?? "") }
+            }.frame(minHeight: 320)
+            Text("Free space can take some minutes to change: snapshots and programs that hold deleted files keep the blocks until they let go.").font(.caption).foregroundStyle(.secondary)
+            HStack { Spacer(); Button("Done", action: close).keyboardShortcut(.defaultAction) }
+        }.padding(24).frame(width: 760, height: 560)
     }
 }
 

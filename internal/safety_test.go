@@ -35,6 +35,9 @@ func TestNoDestructiveCalls(t *testing.T) {
 			if strings.HasPrefix(m, "exec.Command") && allowedExec[f] {
 				continue
 			}
+			if m == "os.MkdirAll" && f == filepath.Join("state", "state.go") {
+				continue // spaceaudit's own folder in Application Support, for the last scan
+			}
 			t.Errorf("%s uses %s, which can change files", f, m)
 		}
 	}

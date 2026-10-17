@@ -196,7 +196,7 @@ func (e *Env) downloads() []model.Finding {
 		f := model.Finding{
 			ID: id("download", p), Rule: "download", Category: catUser, Title: filepath.Base(p), Paths: []string{p},
 			Bytes: u.Bytes, Files: 1, Safety: model.Review, Confidence: "medium", Modified: u.Newest, LastUsed: used, UsedSource: "Spotlight kMDItemLastUsedDate",
-			Verify: []string{"ls -lh " + e.Q(p)}, Commands: []string{e.delOnly(p)}, Restore: "Download it again from its source.",
+			Verify: []string{"ls -lh " + e.Q(p)}, Commands: []string{e.delOnly(p)}, Restore: "Download it again from its source.", Allocated: u.Bytes,
 		}
 		if t := Trash(p); t != "" {
 			f.Alternate = []string{t}
@@ -282,13 +282,20 @@ func (e *Env) largeFiles(ls []large, bundles []string, covered []string) []model
 		if isClaimed(l.path, covered) || fsx.Under(l.path, filepath.Join(e.Home, "Downloads")) {
 			continue
 		}
+		cloned := int64(0)
+		if priv, ok := fsx.PrivateSize(l.path); ok && priv < l.bytes {
+			cloned, l.bytes = l.bytes-priv, priv
+		}
 		f := model.Finding{
 			ID: id("large", l.path), Rule: "large-item", Category: catUser, Title: e.Pretty(l.path), Paths: []string{l.path},
-			Bytes: l.bytes, Files: 1, Safety: model.Review, Confidence: "low", Modified: l.mod,
+			Bytes: l.bytes, Allocated: l.bytes + cloned, Files: 1, Safety: model.Review, Confidence: "low", Modified: l.mod,
 			Reasons:  []string{"This single item is large. No rule knows what it is, so only you can judge it.", "Last changed " + Ago(e.Now, l.mod) + "."},
 			Risks:    []string{"It can be the only copy of your data. Move it to an external disk or cloud storage if you are not sure."},
 			Verify:   []string{"ls -lh " + e.Q(l.path), "file " + e.Q(l.path)},
 			Commands: []string{"Move it to an external disk or cloud storage, then delete the local copy."},
+		}
+		if cloned > 0 {
+			f.Notes = append(f.Notes, fsx.Human(cloned)+" is shared with an APFS clone, so a delete frees only the size shown.")
 		}
 		if strings.HasSuffix(l.path, ".photoslibrary") {
 			f.Safety = model.Keep

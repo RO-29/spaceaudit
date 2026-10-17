@@ -49,6 +49,8 @@ type Finding struct {
 	Restore    string    `json:"restore,omitempty"`
 	NeedsSudo  bool      `json:"needsSudo,omitempty"`
 	Partial    bool      `json:"partial,omitempty"`
+	Allocated  int64     `json:"allocated,omitempty"` // allocated bytes at scan time; recheck compares this, so versions agree
+	OlderDays  int       `json:"olderDays,omitempty"` // only files older than this were counted
 	Notes      []string  `json:"notes,omitempty"`
 }
 
@@ -91,6 +93,44 @@ type Report struct {
 	Totals      Totals    `json:"totals"`
 	Findings    []Finding `json:"findings"`
 	Warnings    []string  `json:"warnings"`
+}
+
+// Event is one structured progress update. Front ends use it to draw the scan screen.
+type Event struct {
+	Step       int    `json:"step"`
+	Steps      int    `json:"steps"`
+	Title      string `json:"title"`
+	Detail     string `json:"detail,omitempty"`
+	Files      int64  `json:"files,omitempty"`
+	Bytes      int64  `json:"bytes,omitempty"`
+	Found      int    `json:"found"`
+	FoundBytes int64  `json:"foundBytes"`
+}
+
+// RecheckItem is one earlier finding measured again.
+type RecheckItem struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Safety   Safety   `json:"safety"`
+	Category string   `json:"category"`
+	Paths    []string `json:"paths"`
+	Before   int64    `json:"before"`
+	Now      int64    `json:"now"`
+	Status   string   `json:"status"` // gone, partly gone, smaller, unchanged, larger, not checked
+	Note     string   `json:"note,omitempty"`
+}
+
+// RecheckReport compares an earlier scan with the disk now.
+type RecheckReport struct {
+	Tool         string        `json:"tool"`
+	Version      string        `json:"version"`
+	CheckedAt    time.Time     `json:"checkedAt"`
+	BaseScanAt   time.Time     `json:"baseScanAt"`
+	Home         string        `json:"home"`
+	VolumeBefore Volume        `json:"volumeBefore"`
+	VolumeNow    Volume        `json:"volumeNow"`
+	Freed        int64         `json:"freed"`
+	Items        []RecheckItem `json:"items"`
 }
 
 // Totals sums findings per safety level without double counting nested paths.

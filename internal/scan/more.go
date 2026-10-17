@@ -183,7 +183,17 @@ func (e *Env) duplicates(files []large) []model.Finding {
 		for _, f := range g {
 			paths = append(paths, f.path)
 		}
-		extra := g[0].bytes * int64(len(g)-1)
+		var extra int64
+		for _, f := range g[1:] {
+			if priv, ok := fsx.PrivateSize(f.path); ok {
+				extra += priv // a clone of the kept copy frees almost nothing
+			} else {
+				extra += f.bytes
+			}
+		}
+		if extra < 1<<20 {
+			continue // they are APFS clones: deleting copies frees nothing
+		}
 		var cmds []string
 		for _, p := range paths[1:] {
 			c, _ := e.del(delAuto, p, false)
@@ -197,8 +207,8 @@ func (e *Env) duplicates(files []large) []model.Finding {
 			ID: id("dup", strings.Join(paths, "|")), Rule: "duplicate-files", Category: catUser,
 			Title: strconv.Itoa(len(g)) + " identical copies of " + filepath.Base(paths[0]), Paths: paths,
 			Bytes: extra, Files: int64(len(g) - 1), Safety: model.Review, Confidence: "high", Modified: g[len(g)-1].mod,
-			Reasons:  []string{"These files have the same size and the same SHA-256 hash, so their content is identical.", "The size shown is the space of the extra copies."},
-			Risks:    []string{"APFS clones share disk blocks. If these copies are clones, a delete frees nothing.", "An app can expect a file at one of these paths. Keep the copy that the app uses."},
+			Reasons:  []string{"These files have the same size and the same SHA-256 hash, so their content is identical.", "The size shown is what deleting the extra copies frees, from APFS. Copies that are clones count as zero."},
+			Risks:    []string{"An app or a document can expect a file at one of these paths. Keep the copy that you use."},
 			Verify:   []string{"shasum -a 256 " + strings.Join(quoted, " ")},
 			Commands: cmds,
 			Restore:  "Copy the kept file back to the deleted path.",

@@ -128,6 +128,9 @@ func (e *Env) walkHome() walkResult {
 			case <-t.C:
 				w, _ := where.Load().(string)
 				e.Opt.Progress(fmt.Sprintf("Walking the home folder: %d files, %s so far (%s)", nFiles.Load(), fsx.Human(nBytes.Load()), e.Pretty(w)))
+				if e.onWalk != nil {
+					e.onWalk(nFiles.Load(), nBytes.Load(), e.Pretty(w))
+				}
 			}
 		}
 	}()

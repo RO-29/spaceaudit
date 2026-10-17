@@ -293,3 +293,30 @@ func Markdown(w io.Writer, r model.Report) {
 		}
 	}
 }
+
+// Recheck writes the before and after of an earlier scan.
+func Recheck(w io.Writer, r model.RecheckReport, ansi bool) {
+	col := map[string]string{"gone": "\033[32m", "partly gone": "\033[32m", "smaller": "\033[32m", "unchanged": "\033[90m", "larger": "\033[33m", "not checked": "\033[90m"}
+	c := func(st, s string) string {
+		if !ansi {
+			return s
+		}
+		return col[st] + s + "\033[0m"
+	}
+	fmt.Fprintf(w, "spaceaudit recheck  %s  (base scan %s)\n", r.CheckedAt.Format("2006-01-02 15:04"), r.BaseScanAt.Format("2006-01-02 15:04"))
+	if r.VolumeNow.Total > 0 {
+		fmt.Fprintf(w, "Free space: %s at the base scan, %s now (%+.1f GB).\n", fsx.Human(r.VolumeBefore.Available), fsx.Human(r.VolumeNow.Available),
+			float64(r.VolumeNow.Available-r.VolumeBefore.Available)/(1<<30))
+	}
+	fmt.Fprintf(w, "The rechecked items use %s less than before.\n\n", fsx.Human(r.Freed))
+	order := []string{"gone", "partly gone", "smaller", "larger", "unchanged", "not checked"}
+	for _, st := range order {
+		for _, it := range r.Items {
+			if it.Status != st {
+				continue
+			}
+			fmt.Fprintf(w, "%-24s %9s -> %9s  %s\n", c(st, strings.ToUpper(st)), fsx.Human(it.Before), fsx.Human(it.Now), oneLine(it.Title))
+		}
+	}
+	fmt.Fprintln(w, "\nFree space can take some minutes to change: APFS snapshots and programs that hold deleted files keep the blocks until they let go.")
+}

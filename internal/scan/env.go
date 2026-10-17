@@ -27,6 +27,7 @@ type Options struct {
 	NoDocker   bool
 	Jobs       int
 	Progress   func(string)
+	Events     func(model.Event)
 }
 
 // Env is the shared, read-only state for every rule.
@@ -41,6 +42,7 @@ type Env struct {
 	Facts  []model.Fact
 	Warn   []string
 	sizes  sync.Map // path -> fsx.Usage measured during the home walk
+	onWalk func(files, bytes int64, where string)
 	warnMu sync.Mutex
 }
 

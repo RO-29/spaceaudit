@@ -295,3 +295,30 @@ func TestHeldFileNames(t *testing.T) {
 		t.Error("runFor formats wrong")
 	}
 }
+
+func TestRecheckStatuses(t *testing.T) {
+	_, home := testEnv(t)
+	gone, shrunk, same := filepath.Join(home, "gone"), filepath.Join(home, "shrunk"), filepath.Join(home, "same")
+	write(t, filepath.Join(shrunk, "a"), 2<<20)
+	write(t, filepath.Join(same, "a"), 2<<20)
+	base := model.Report{Home: home, Findings: []model.Finding{
+		{ID: "1", Paths: []string{gone}, Bytes: 4 << 20},
+		{ID: "2", Paths: []string{shrunk}, Bytes: 20 << 20},
+		{ID: "3", Paths: []string{same}, Bytes: fsx.Measure(same).Freeable, Allocated: fsx.Measure(same).Bytes},
+		{ID: "4", Bytes: 5},
+	}}
+	r := Recheck(base, nil)
+	got := map[string]string{}
+	for _, it := range r.Items {
+		got[it.ID] = it.Status
+	}
+	want := map[string]string{"1": "gone", "2": "smaller", "3": "unchanged", "4": "not checked"}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("item %s: status %q, want %q", k, got[k], v)
+		}
+	}
+	if r.Freed < 20<<20 {
+		t.Errorf("freed = %d, want at least 20 MB", r.Freed)
+	}
+}

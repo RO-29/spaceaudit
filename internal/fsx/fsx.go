@@ -26,6 +26,8 @@ type Usage struct {
 	Exists   bool
 	Skipped  bool // a File Provider folder that the scan must not open
 	TimedOut bool
+	Cloned   int64 // bytes in large files that share blocks with an APFS clone
+	Freeable int64 // what deleting everything would free: Bytes minus clone-shared blocks
 }
 
 // providerRoots are File Provider folders (iCloud Drive, Google Drive, Dropbox, OneDrive).
@@ -78,7 +80,7 @@ func measure(root string, deadline time.Time) Usage {
 		return u
 	}
 	if !st.IsDir() {
-		add(&u, st, rootSys, nil)
+		add(&u, root, st, rootSys, nil)
 		return u
 	}
 	seen := map[uint64]bool{}
@@ -107,13 +109,13 @@ func measure(root string, deadline time.Time) Usage {
 		if d.IsDir() && (sys.Dev != rootSys.Dev || (Home != "" && p != root && Provider(p, Home))) {
 			return fs.SkipDir
 		}
-		add(&u, info, sys, seen)
+		add(&u, p, info, sys, seen)
 		return nil
 	})
 	return u
 }
 
-func add(u *Usage, info fs.FileInfo, sys *syscall.Stat_t, seen map[uint64]bool) {
+func add(u *Usage, p string, info fs.FileInfo, sys *syscall.Stat_t, seen map[uint64]bool) {
 	if info.Mode()&fs.ModeSymlink != 0 {
 		u.Symlinks++
 	}
@@ -130,7 +132,15 @@ func add(u *Usage, info fs.FileInfo, sys *syscall.Stat_t, seen map[uint64]bool) 
 			u.Shared += sys.Blocks * 512
 		}
 	}
-	u.Bytes += sys.Blocks * 512
+	b := sys.Blocks * 512
+	u.Bytes += b
+	u.Freeable += b
+	if !info.IsDir() && b >= 1<<20 {
+		if priv, ok := PrivateSize(p); ok && priv < b {
+			u.Cloned += b - priv
+			u.Freeable -= b - priv
+		}
+	}
 	if m := info.ModTime(); m.After(u.Newest) && !m.After(time.Now().Add(24*time.Hour)) {
 		u.Newest = m
 	}

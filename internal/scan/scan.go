@@ -29,7 +29,14 @@ func Run(o Options) model.Report {
 		o.Progress = func(string) {}
 	}
 	fsx.Home = o.Home
-	o.Progress("Taking a snapshot of open files (lsof)")
+	steps := []string{"Snapshot of open files (lsof)", "Known caches and tool folders", "App and browser caches", "Homebrew and Docker (dry run)", "Snapshots, open deleted files, simulators", "Applications and Downloads"}
+	if !o.Quick {
+		steps = append(steps, "Walking the home folder", "Project build folders and worktrees", "Duplicate files")
+	}
+	if o.Events != nil {
+		o.Events(model.Event{Step: 1, Steps: len(steps), Title: steps[0]})
+	}
+	o.Progress(steps[0])
 	e := newEnv(o)
 	for _, r := range []string{"Library/Mobile Documents", "Library/CloudStorage"} {
 		if fsx.Exists(filepath.Join(o.Home, r)) {
@@ -45,32 +52,49 @@ func Run(o Options) model.Report {
 	rep.Volume = volume(o.Home)
 
 	var findings []model.Finding
-	o.Progress("Checking known caches and tool folders")
+	cur := 0
+	step := func(i int, detail string) {
+		cur = i
+		var fb int64
+		for _, f := range findings {
+			fb += f.Bytes
+		}
+		o.Progress(steps[i])
+		if o.Events != nil {
+			o.Events(model.Event{Step: i + 1, Steps: len(steps), Title: steps[i], Detail: detail, Found: len(findings), FoundBytes: fb})
+		}
+	}
+	e.onWalk = func(files, bytes int64, where string) {
+		if o.Events != nil {
+			o.Events(model.Event{Step: cur + 1, Steps: len(steps), Title: steps[cur], Detail: where, Files: files, Bytes: bytes, Found: len(findings)})
+		}
+	}
+	step(1, "")
 	st, claimed := e.staticRules()
 	findings = append(findings, st...)
-	o.Progress("Checking app caches")
+	step(2, "")
 	findings = append(findings, e.cacheChildren(claimed)...)
 	findings = append(findings, e.webCaches(claimed)...)
 	findings = append(findings, e.sandboxWebCaches(claimed)...)
 	findings = append(findings, e.sandboxCaches(claimed)...)
 	findings = append(findings, e.editorLeftovers()...)
 	findings = append(findings, e.nodeVersions()...)
-	o.Progress("Asking Homebrew and Docker (dry run only)")
+	step(3, "")
 	findings = append(findings, e.homebrew()...)
 	findings = append(findings, e.containers()...)
-	o.Progress("Checking snapshots and open deleted files")
+	step(4, "")
 	findings = append(findings, e.systemFacts()...)
-	o.Progress("Checking applications and Downloads")
+	step(5, "")
 	findings = append(findings, e.apps()...)
 	findings = append(findings, e.downloads()...)
 
 	if !o.Quick {
-		o.Progress("Walking the home folder (this is the slow part)")
+		step(6, "")
 		w := e.walkHome()
-		o.Progress("Judging project build folders and worktrees")
+		step(7, strconv.Itoa(len(w.cands))+" build folders, "+strconv.Itoa(len(w.worktrees))+" worktrees")
 		findings = append(findings, e.projectFindings(w.cands)...)
 		findings = append(findings, e.worktreeFindings(w.worktrees)...)
-		o.Progress("Hashing large files to find duplicates")
+		step(8, strconv.Itoa(len(w.dups))+" large files")
 		findings = append(findings, e.duplicates(w.dups)...)
 		var covered []string
 		for _, f := range findings {
@@ -106,6 +130,9 @@ func Run(o Options) model.Report {
 	rep.Facts = e.Facts
 	rep.Warnings = append(e.Warn, "This tool only recommends. Check every path and command yourself before you run it.")
 	rep.DurationSec = time.Since(start).Seconds()
+	if o.Events != nil {
+		o.Events(model.Event{Step: len(steps), Steps: len(steps), Title: "Done", Found: len(findings)})
+	}
 	return rep
 }
 

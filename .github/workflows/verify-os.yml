@@ -1,0 +1,31 @@
+name: verify-os
+on: [push, workflow_dispatch]
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-13, macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-26' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sw_vers && xcode-select -p && df -h /
+      - run: make test
+      - run: make build
+      - name: full scan (read-only)
+        run: time ./bin/spaceaudit json --min 0 --no-docker -o full.json
+      - name: quick scan (read-only)
+        run: ./bin/spaceaudit json --quick --min 0 --no-docker -o quick.json
+      - run: python3 scripts/verify-os.py full.json
+      - run: python3 scripts/verify-os.py quick.json
+      - name: recheck right after the scan
+        run: ./bin/spaceaudit recheck | head -5
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-${{ matrix.os }}
+          path: "*.json"

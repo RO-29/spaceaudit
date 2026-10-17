@@ -2,12 +2,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-isatty"
@@ -16,6 +18,7 @@ import (
 	"github.com/RO-29/spaceaudit/internal/model"
 	"github.com/RO-29/spaceaudit/internal/report"
 	"github.com/RO-29/spaceaudit/internal/scan"
+	"github.com/RO-29/spaceaudit/internal/state"
 	"github.com/RO-29/spaceaudit/internal/tui"
 )
 
@@ -29,6 +32,7 @@ Usage:
   spaceaudit json  [-o file]   machine-readable report (the Mac app reads this)
   spaceaudit script [-o file]  review script: every command is commented out
   spaceaudit plan  [-o file]   plan for --level items: runs only verify lines, cleanup lines stay comments
+  spaceaudit recheck [-i file] measure again only the items of the last scan (or of a saved .json/.html report)
   spaceaudit rules             print the rule catalog as Markdown
   spaceaudit version
 
@@ -58,6 +62,9 @@ func main() {
 	noOpen := fs.Bool("no-open", false, "do not open the HTML report after writing it")
 	levels := fs.String("level", "", "only these levels, comma separated: safe,review,risky,keep (plan defaults to safe)")
 	fs.StringVar(&home, "home", home, "home folder to scan")
+	input := fs.String("i", "", "recheck: the report to compare against (default: the last scan)")
+	ids := fs.String("ids", "", "recheck: only these finding ids, comma separated")
+	asJSON := fs.Bool("json", false, "recheck: print JSON")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage); fs.PrintDefaults() }
 	_ = fs.Parse(args)
 
@@ -73,6 +80,10 @@ func main() {
 		return
 	}
 
+	if cmd == "recheck" {
+		recheck(*input, *ids, *asJSON)
+		return
+	}
 	tty := isatty.IsTerminal(os.Stderr.Fd())
 	o := scan.Options{Home: home, MinBytes: int64(*minMB) << 20, LargeBytes: int64(*largeGB * (1 << 30)),
 		ActiveFor: *active, StaleAfter: time.Duration(*stale) * 24 * time.Hour, Quick: *quick, NoDocker: *noDocker, Jobs: *jobs}
@@ -81,6 +92,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "\r\033[K• %s", s)
 		} else if cmd == "json" {
 			fmt.Fprintln(os.Stderr, "progress: "+s)
+		}
+	}
+	if cmd == "json" && !tty {
+		var mu sync.Mutex
+		o.Events = func(ev model.Event) {
+			b, _ := json.Marshal(ev)
+			mu.Lock()
+			fmt.Fprintln(os.Stderr, "event: "+string(b))
+			mu.Unlock()
 		}
 	}
 
@@ -100,6 +120,11 @@ func main() {
 	r := scan.Run(o)
 	if tty {
 		fmt.Fprint(os.Stderr, "\r\033[K")
+	}
+	if !*quick {
+		if err := state.Save(r); err != nil {
+			fmt.Fprintln(os.Stderr, "spaceaudit: could not save the scan for recheck:", err)
+		}
 	}
 	if *levels == "" && cmd == "plan" {
 		*levels = "safe"
@@ -173,6 +198,30 @@ func safeTarget(path string) error {
 		return fmt.Errorf("%s exists and spaceaudit did not write it, so it is not overwritten. Choose another -o path", path)
 	}
 	return nil
+}
+
+func recheck(input, ids string, asJSON bool) {
+	if input == "" {
+		input = state.LastPath()
+	}
+	base, err := state.Load(input)
+	if err != nil {
+		fail(fmt.Errorf("no report to compare against (%v). Run a full scan first, or pass -i report.json", err))
+	}
+	want := map[string]bool{}
+	for _, id := range strings.Split(ids, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
+	}
+	r := scan.Recheck(base, want)
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(r)
+		return
+	}
+	report.Recheck(os.Stdout, r, isatty.IsTerminal(os.Stdout.Fd()))
 }
 
 func fail(err error) {
