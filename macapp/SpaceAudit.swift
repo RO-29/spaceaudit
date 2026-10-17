@@ -124,7 +124,7 @@ final class Scanner: ObservableObject {
 
     func scan(quick: Bool) {
         running = true; error = nil; progress = "Starting the read-only scan"; started = Date()
-        event = nil; stepTitles = [:]; files = 0; bytesRead = 0; currentPath = ""; self.quick = quick; cancelled = false
+        event = nil; stepTitles = [:]; files = 0; bytesRead = 0; currentPath = ""; self.quick = quick; cancelled = false; mode = "scan"
         let exe = cli
         Scanner.log("scan start quick=\(quick)")
         let p = Process()
@@ -174,23 +174,46 @@ final class Scanner: ObservableObject {
         event = ev
     }
 
-    // Measures again only the items of the last full scan.
+    @Published var mode = "scan" // "scan" or "recheck": the progress screen shows the right steps
+
+    // Measures again only the items of the last full scan, with progress per item. Cancel ends it.
     func runRecheck() {
-        running = true; progress = "Rechecking the items of the last full scan"; started = Date(); event = nil; stepTitles = [:]
+        running = true; error = nil; progress = "Rechecking the items of the last full scan"; started = Date()
+        event = nil; stepTitles = [:]; files = 0; bytesRead = 0; currentPath = ""; mode = "recheck"; cancelled = false
         let exe = cli
+        Scanner.log("recheck start")
+        let p = Process(); p.executableURL = exe; p.arguments = ["recheck", "--json"]
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out; p.standardError = err
+        process = p
+        let buf = LineBuffer()
+        err.fileHandleForReading.readabilityHandler = { h in
+            for line in buf.add(h.availableData) where line.hasPrefix("event: ") {
+                if let ev = try? JSONDecoder().decode(ScanEvent.self, from: Data(line.dropFirst(7).utf8)) {
+                    Task { @MainActor in self.event = ev; if let d = ev.detail { self.currentPath = d } }
+                }
+            }
+        }
         Task.detached {
-            let p = Process(); p.executableURL = exe; p.arguments = ["recheck", "--json"]
-            let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
-            try? p.run()
+            do { try p.run() } catch {
+                await MainActor.run { self.error = "Cannot start \(exe.path): \(error.localizedDescription)"; self.running = false; self.mode = "scan" }
+                return
+            }
             let data = out.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            err.fileHandleForReading.readabilityHandler = nil
             let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601withFractions
             let r = try? dec.decode(RecheckReport.self, from: data)
             await MainActor.run {
-                self.running = false
-                if let r { self.recheck = r } else { self.error = "No full scan to compare against. Run a Full scan first." }
+                self.running = false; self.process = nil; self.mode = "scan"
+                if let r { self.recheck = r; Scanner.log("recheck done items=\(r.items.count) freed=\(r.freed)") }
+                else if self.cancelled { Scanner.log("recheck cancelled") }
+                else { self.error = "No full scan to compare against. Run a Full scan first." }
             }
         }
     }
+
+    // The report that the 6-hour schedule keeps up to date.
+    static let scheduledReport = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("spaceaudit-reports/spaceaudit-latest.html")
 
     // Runs the CLI to write a report file. The CLI refuses to overwrite a file it did not write.
     func export(_ kind: String, to url: URL, quick: Bool = false) {
@@ -380,6 +403,11 @@ struct ContentView: View {
                 Button { scanner.runRecheck() } label: { Label("Recheck", systemImage: "checkmark.arrow.trianglehead.counterclockwise") .labelStyle(.titleAndIcon) }
                     .help("Measure again only the items of the last full scan, to see what your cleanup freed").disabled(scanner.running)
                 Menu {
+                    Button("Open scheduled report (every 6 hours)") {
+                        if FileManager.default.fileExists(atPath: Scanner.scheduledReport.path) { NSWorkspace.shared.open(Scanner.scheduledReport) }
+                        else { scanner.error = "No scheduled report yet. Install the schedule with scripts/schedule.sh install 6." }
+                    }
+                    Divider()
                     Button("Save HTML report…") { save("html", "spaceaudit-report.html") }
                     Button("Save Markdown report…") { save("md", "spaceaudit-report.md") }
                     Button("Save review script…") { save("script", "spaceaudit-review.sh") }
@@ -403,7 +431,8 @@ struct ContentView: View {
         .onAppear {
             let args = CommandLine.arguments
             if let i = args.firstIndex(of: "--show"), i + 1 < args.count { level = args[i + 1] }
-            if scanner.report == nil { scanner.scan(quick: !args.contains("--autoscan-full")) }
+            if args.contains("--autorecheck") { scanner.runRecheck() }
+            else if scanner.report == nil { scanner.scan(quick: !args.contains("--autoscan-full")) }
         }
     }
 
@@ -515,9 +544,10 @@ struct ScanView: View {
     @ObservedObject var scanner: Scanner
     @State private var spin = false
 
-    var steps: Int { scanner.event?.steps ?? (scanner.quick ? 6 : 9) }
+    var recheck: Bool { scanner.mode == "recheck" }
+    var steps: Int { scanner.event?.steps ?? (scanner.quick ? 7 : 10) }
     var current: Int { scanner.event?.step ?? 0 }
-    var fraction: Double { steps == 0 ? 0 : Double(max(0, current - 1)) / Double(steps) }
+    var fraction: Double { steps == 0 ? 0 : Double(recheck ? current : max(0, current - 1)) / Double(steps) }
 
     var body: some View {
         VStack(spacing: 22) {
@@ -531,16 +561,16 @@ struct ScanView: View {
                         .padding(14).rotationEffect(.degrees(spin ? 360 : 0))
                         .animation(.linear(duration: 1.6).repeatForever(autoreverses: false), value: spin)
                     VStack(spacing: 2) {
-                        Text("\(scanner.event?.found ?? 0)").font(.system(size: 34, weight: .bold, design: .rounded)).contentTransition(.numericText())
-                        Text("found").font(.caption).foregroundStyle(.secondary)
-                        Text(human(scanner.event?.foundBytes ?? 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(recheck ? "\(current)/\(steps)" : "\(scanner.event?.found ?? 0)").font(.system(size: recheck ? 26 : 34, weight: .bold, design: .rounded)).contentTransition(.numericText())
+                        Text(recheck ? "items checked" : "found").font(.caption).foregroundStyle(.secondary)
+                        Text(recheck ? "\(human(scanner.event?.foundBytes ?? 0)) freed" : human(scanner.event?.foundBytes ?? 0)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 }.frame(width: 150, height: 150).onAppear { spin = true }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(scanner.event == nil && scanner.stepTitles.isEmpty ? scanner.progress : "Scanning your Mac").font(.title2.bold())
+                    Text(recheck ? "Rechecking the last full scan" : (scanner.event == nil && scanner.stepTitles.isEmpty ? scanner.progress : "Scanning your Mac")).font(.title2.bold())
                     Text("Read-only. SpaceAudit changes nothing.").foregroundStyle(.secondary)
                     TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        Text("\(Int(ctx.date.timeIntervalSince(scanner.started)))s · step \(max(current, 1)) of \(steps) · \(scanner.quick ? "quick scan" : "full scan")")
+                        Text(recheck ? "\(Int(ctx.date.timeIntervalSince(scanner.started)))s · each item is measured again; the largest go first" : "\(Int(ctx.date.timeIntervalSince(scanner.started)))s · step \(max(current, 1)) of \(steps) · \(scanner.quick ? "quick scan" : "full scan")")
                             .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                     }
                     if scanner.files > 0 {
@@ -552,6 +582,14 @@ struct ScanView: View {
                 }
                 Spacer(minLength: 0)
             }
+            if recheck {
+                VStack(alignment: .leading, spacing: 8) {
+                    ProgressView(value: Double(current), total: Double(max(steps, 1)))
+                    Text(scanner.currentPath.isEmpty ? "Starting" : scanner.currentPath).font(.callout.monospaced()).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+                    Text("A very large folder (for example a node_modules with a million files) takes minutes, as it did in the scan.").font(.caption).foregroundStyle(.secondary)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+            } else {
             VStack(alignment: .leading, spacing: 9) {
                 ForEach(1...max(steps, 1), id: \.self) { i in
                     HStack(spacing: 10) {
@@ -572,8 +610,9 @@ struct ScanView: View {
                 }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+            }
             HStack {
-                Text("A full scan of a large home folder takes some minutes. You can keep working.").font(.caption).foregroundStyle(.secondary)
+                Text(recheck ? "Nothing is changed. You can keep working." : "A full scan of a large home folder takes some minutes. You can keep working.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", role: .cancel) { scanner.cancel() }.keyboardShortcut(.cancelAction)
             }
@@ -655,6 +694,8 @@ struct RecheckView: View {
     let r: RecheckReport
     let close: () -> Void
     func tint(_ s: String) -> Color { ["gone": .green, "partly gone": .green, "smaller": .green, "larger": .orange][s] ?? .secondary }
+    // Changes first, then unchanged items, then items that could not be measured.
+    func rank(_ s: String) -> Int { ["gone": 0, "partly gone": 0, "smaller": 0, "larger": 1, "unchanged": 2][s] ?? 3 }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Recheck").font(.title.bold())
@@ -664,10 +705,10 @@ struct RecheckView: View {
                 VStack(alignment: .leading) { Text("Free space then").font(.caption).foregroundStyle(.secondary); Text(human(r.volumeBefore.available)).font(.title2.bold()) }
                 VStack(alignment: .leading) { Text("Free space now").font(.caption).foregroundStyle(.secondary); Text(human(r.volumeNow.available)).font(.title2.bold()) }
             }
-            Table(r.items.sorted { ($0.status == "unchanged" ? 1 : 0, -($0.before - $0.now)) < ($1.status == "unchanged" ? 1 : 0, -($1.before - $1.now)) }) {
+            Table(r.items.sorted { (rank($0.status), -($0.before - $0.now)) < (rank($1.status), -($1.before - $1.now)) }) {
                 TableColumn("Status") { i in Text(i.status.uppercased()).font(.caption.bold()).foregroundStyle(tint(i.status)) }.width(100)
                 TableColumn("Before") { i in Text(human(i.before)).monospacedDigit() }.width(80)
-                TableColumn("Now") { i in Text(human(i.now)).monospacedDigit() }.width(80)
+                TableColumn("Now") { i in Text(i.status == "not checked" ? "—" : human(i.now)).monospacedDigit().foregroundStyle(i.status == "not checked" ? .secondary : .primary) }.width(80)
                 TableColumn("Item") { i in Text(i.title).lineLimit(1).help(i.note ?? "") }
             }.frame(minHeight: 320)
             Text("Free space can take some minutes to change: snapshots and programs that hold deleted files keep the blocks until they let go.").font(.caption).foregroundStyle(.secondary)

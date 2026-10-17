@@ -318,7 +318,11 @@ func Recheck(w io.Writer, r model.RecheckReport, ansi bool) {
 			if it.Status != st {
 				continue
 			}
-			fmt.Fprintf(w, "%-24s %9s -> %9s  %s\n", c(st, strings.ToUpper(st)), fsx.Human(it.Before), fsx.Human(it.Now), oneLine(it.Title))
+			now := fsx.Human(it.Now)
+			if st == "not checked" {
+				now = "-"
+			}
+			fmt.Fprintf(w, "%-24s %9s -> %9s  %s\n", c(st, strings.ToUpper(st)), fsx.Human(it.Before), now, oneLine(it.Title))
 		}
 	}
 	fmt.Fprintln(w, "\nFree space can take some minutes to change: APFS snapshots and programs that hold deleted files keep the blocks until they let go.")

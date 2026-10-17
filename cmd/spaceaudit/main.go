@@ -229,7 +229,21 @@ func recheck(input, ids string, asJSON bool) {
 			want[id] = true
 		}
 	}
-	r := scan.Recheck(base, want)
+	tty := isatty.IsTerminal(os.Stderr.Fd())
+	var mu sync.Mutex
+	r := scan.Recheck(base, want, func(done, total int, title string, freed int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		if tty {
+			fmt.Fprintf(os.Stderr, "\r\033[K• Rechecking %d of %d, %s freed so far: %s", done, total, fsx.Human(freed), title)
+			return
+		}
+		b, _ := json.Marshal(model.Event{Step: done, Steps: total, Title: "Rechecking the last full scan", Detail: title, Found: done, FoundBytes: freed})
+		fmt.Fprintln(os.Stderr, "event: "+string(b))
+	})
+	if tty {
+		fmt.Fprint(os.Stderr, "\r\033[K")
+	}
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")

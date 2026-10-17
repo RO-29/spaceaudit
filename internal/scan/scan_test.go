@@ -314,7 +314,7 @@ func TestRecheckStatuses(t *testing.T) {
 		{ID: "3", Paths: []string{same}, Bytes: fsx.Measure(same).Freeable, Allocated: fsx.Measure(same).Bytes},
 		{ID: "4", Bytes: 5},
 	}}
-	r := Recheck(base, nil)
+	r := Recheck(base, nil, nil)
 	got := map[string]string{}
 	for _, it := range r.Items {
 		got[it.ID] = it.Status
