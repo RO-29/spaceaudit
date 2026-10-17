@@ -29,6 +29,11 @@ struct Finding: Codable, Identifiable, Hashable {
     var actionable: Bool { safety != "keep" && !commands.isEmpty }
 }
 
+struct Part: Codable, Hashable { let name: String; let path: String?; let bytes: Int64; let explain: String?; let safety: String?; let partial: Bool?; let top: [String]? }
+struct InvGroup: Codable, Hashable { let name: String; let note: String?; let bytes: Int64; let parts: [Part] }
+struct InvItem: Codable, Hashable, Identifiable { var id: String { name }; let name: String; let kind: String?; let installed: Bool?; let running: Bool?; let appBytes: Int64?; let bytes: Int64; let groups: [InvGroup]?; let parts: [Part]?; let notes: [String]? }
+struct Inventory: Codable, Hashable { let key: String; let title: String; let intro: String; let bytes: Int64; let items: [InvItem] }
+
 struct Volume: Codable { let mount: String; let total: Int64; let used: Int64; let available: Int64 }
 struct Totals: Codable { let safe: Int64; let review: Int64; let risky: Int64; let keep: Int64 }
 struct Fact: Codable, Hashable { let key: String; let value: String; let note: String? }
@@ -42,6 +47,7 @@ struct Report: Codable {
     let findings: [Finding]
     let facts: [Fact]?
     let warnings: [String]?
+    let inventories: [Inventory]?
 }
 
 func human(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .binary) }
@@ -262,6 +268,18 @@ struct ContentView: View {
                         }.tag(l)
                     }
                 }
+                if let invs = scanner.report?.inventories, !invs.isEmpty {
+                    Section("Inventory") {
+                        ForEach(invs, id: \.key) { v in
+                            HStack {
+                                Image(systemName: ["browsers": "globe", "ai": "sparkles", "languages": "chevron.left.forwardslash.chevron.right", "downloads": "arrow.down.circle"][v.key] ?? "square.grid.2x2")
+                                Text(v.title).lineLimit(1)
+                                Spacer()
+                                Text(human(v.bytes)).foregroundStyle(.secondary).font(.caption.monospacedDigit())
+                            }.tag("inv:" + v.key)
+                        }
+                    }
+                }
                 if let facts = scanner.report?.facts, !facts.isEmpty {
                     Section("Facts") {
                         ForEach(facts, id: \.self) { f in
@@ -273,6 +291,9 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210)
         } content: {
+            if level.hasPrefix("inv:"), let v = scanner.report?.inventories?.first(where: { "inv:" + $0.key == level }) {
+                InventoryView(inv: v)
+            } else {
             VStack(spacing: 0) {
                 header
                 if partialCount > 0 {
@@ -301,6 +322,7 @@ struct ContentView: View {
             }
             .searchable(text: $search, prompt: "Search title or path")
             .navigationSplitViewColumnWidth(min: 460, ideal: 620)
+            }
         } detail: {
             if selection.count == 1, let id = selection.first, let f = scanner.report?.findings.first(where: { $0.id == id }) {
                 DetailView(f: f)
@@ -530,6 +552,71 @@ struct ScanView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
         .shadow(color: .black.opacity(0.18), radius: 30, y: 10)
         .animation(.easeInOut(duration: 0.3), value: current)
+    }
+}
+
+// The space map of one area: every item, its profiles and parts, with what each part holds.
+struct InventoryView: View {
+    let inv: Inventory
+    func tint(_ s: String?) -> Color { ["safe": .green, "review": .orange, "risky": .red, "keep": .blue][s ?? ""] ?? .gray }
+    func partRow(_ p: Part) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Circle().fill(tint(p.safety)).frame(width: 8, height: 8)
+                Text(p.name).lineLimit(1)
+                if p.partial == true { Text("partial").font(.caption2).foregroundStyle(.orange) }
+                Spacer()
+                Text(human(p.bytes)).monospacedDigit().bold()
+            }
+            if let ex = p.explain, !ex.isEmpty { Text(ex).font(.caption).foregroundStyle(.secondary).padding(.leading, 16) }
+            ForEach(p.top ?? [], id: \.self) { t in Text("· " + t).font(.caption.monospaced()).foregroundStyle(.secondary).padding(.leading, 16) }
+        }.padding(.vertical, 2)
+    }
+    func bar(_ parts: [Part], _ total: Int64) -> some View {
+        GeometryReader { g in
+            HStack(spacing: 0) { ForEach(parts.filter { $0.bytes > 0 }, id: \.self) { p in Rectangle().fill(tint(p.safety)).frame(width: g.size.width * Double(p.bytes) / Double(max(1, total))) } }
+                .clipShape(Capsule())
+        }.frame(height: 7)
+    }
+    var body: some View {
+        List {
+            Section {
+                Text(inv.intro).foregroundStyle(.secondary)
+                HStack(spacing: 14) {
+                    ForEach([("safe", "rebuilds itself"), ("review", "has a cost"), ("risky", "can hold your data"), ("keep", "manage in the app")], id: \.0) { k in
+                        HStack(spacing: 4) { Circle().fill(tint(k.0)).frame(width: 8, height: 8); Text(k.1).font(.caption) }
+                    }
+                }
+            }
+            ForEach(inv.items) { it in
+                let all = (it.parts ?? []) + (it.groups ?? []).flatMap(\.parts)
+                DisclosureGroup {
+                    ForEach(it.notes ?? [], id: \.self) { n in Text(n).font(.caption).foregroundStyle(.secondary) }
+                    ForEach(it.groups ?? [], id: \.self) { g in
+                        DisclosureGroup {
+                            ForEach(g.parts.filter { $0.bytes > 0 }, id: \.self) { partRow($0) }
+                        } label: {
+                            HStack { Image(systemName: "person.crop.circle"); Text(g.name).bold(); Text(g.note ?? "").font(.caption).foregroundStyle(.secondary); Spacer(); Text(human(g.bytes)).monospacedDigit() }
+                        }
+                    }
+                    ForEach((it.parts ?? []).filter { $0.bytes > 0 }, id: \.self) { partRow($0) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(it.name).font(.headline)
+                            if let k = it.kind, !k.isEmpty { Text(k).font(.caption).foregroundStyle(.secondary) }
+                            if it.running == true { Text("running").font(.caption2.bold()).foregroundStyle(.orange) }
+                            if let a = it.appBytes, a > 0 { Text("app \(human(a))").font(.caption2).foregroundStyle(.secondary) }
+                            Spacer()
+                            Text(human(it.bytes)).font(.headline.monospacedDigit())
+                        }
+                        bar(all, it.bytes)
+                    }.padding(.vertical, 4)
+                }
+            }
+        }
+        .navigationTitle(inv.title)
+        .navigationSplitViewColumnWidth(min: 460, ideal: 640)
     }
 }
 

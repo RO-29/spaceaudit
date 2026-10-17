@@ -13,6 +13,8 @@ It comes in five forms that share one scanner:
 | HTML report | You want a designed report with a treemap, filters and copy buttons | `spaceaudit html` |
 | Mac app | You prefer a window | `SpaceAudit.app` |
 | Review script | You want to clean up in an editor | `spaceaudit script` |
+| Inventory | You want to know where the space goes | `spaceaudit inventory`: browsers with every profile, AI agents and tools, programming languages, Downloads by type |
+| Recheck | You cleaned up and want to see what changed | `spaceaudit recheck` measures only the items of the last full scan again |
 | Plan | You chose what to clean | `spaceaudit plan` (safe items by default, `--level` to change). Running it runs only the verify lines. |
 
 Also: `spaceaudit md` (Markdown), `spaceaudit json` (machine-readable), `spaceaudit rules` (the rule catalog), and `scripts/quick-audit.sh` (a shell-only size list for a Mac with no tools installed).
@@ -70,6 +72,19 @@ A finding moves from safe to review automatically when a running program has a f
 - Homebrew (`brew cleanup -n`), APFS snapshots, deleted files that programs still hold open, and space the scan cannot explain.
 
 [docs/EDGE-CASES.md](docs/EDGE-CASES.md) lists every case where a plain delete gives the wrong result, and how the tool handles it.
+
+## Inventory
+
+The inventory is a map, not advice. Each part says what it holds and how safe it is to clear.
+
+- **Browsers:** Safari, Chrome (and Beta, Canary), Chromium, Arc, Dia, Brave, Edge, Vivaldi, Opera, Comet, Firefox (and Developer Edition), Zen, LibreWolf, Floorp, Waterfox, Orion. Every profile with its name and account, and its parts: HTTP and code caches, service workers, site databases, cookies, history, extensions (each named from its manifest, with size), extension settings. Browser-wide parts: the on-device AI model, profile snapshots, components, speech packs.
+- **AI agents and tools:** Claude Code, Claude desktop, Codex, ChatGPT desktop, Cursor and cursor-agent, Windsurf, Kiro, Zed, OpenCode, OpenClaw, pi, Gemini CLI, Hermes, Amp, Aider, Goose, Crush, Continue, Copilot, and AI extensions inside VS Code-family editors (Cline, Roo Code, Kilo Code, Copilot, Codex, Gemini Code Assist, Amazon Q), plus Ollama, LM Studio, Jan and the Hugging Face cache. Each folder has its own level: session history is review, caches and logs are safe, an unknown folder is keep. Parts over 100 MB list their largest members.
+- **Programming languages:** JavaScript and TypeScript, Python, Go, Rust, Java/Kotlin/Scala, Swift and Apple platforms, Ruby, PHP, Dart and Flutter, .NET, Haskell, Julia, Elixir, C and C++: project dependency and build folders (with the largest projects), caches, toolchains and installed versions.
+- **Downloads:** grouped into installers, archives, videos, audio, images, documents, code and data, folders and other, each with age groups and the largest items.
+
+## Recheck
+
+Every full scan is kept in `~/Library/Application Support/spaceaudit/last-scan.json`. After you clean up, `spaceaudit recheck` (or the Recheck button in the app) measures only those items again and says for each one: gone, partly gone, smaller, unchanged or larger, plus the free space then and now. It compares the same measure and the same age filter as the scan. An item that could not be measured fully says "not checked", never "smaller". `-i report.json` or `-i report.html` compares with an older report.
 
 ## Choosing what to clean
 

@@ -320,3 +320,52 @@ func Recheck(w io.Writer, r model.RecheckReport, ansi bool) {
 	}
 	fmt.Fprintln(w, "\nFree space can take some minutes to change: APFS snapshots and programs that hold deleted files keep the blocks until they let go.")
 }
+
+// Inventory writes the space map: browsers with profiles, AI tools, languages and Downloads.
+func Inventory(w io.Writer, r model.Report, ansi bool) {
+	lv := map[model.Safety]string{model.Safe: "safe  ", model.Review: "review", model.Risky: "risky ", model.Keep: "keep  "}
+	b := func(s string) string {
+		if !ansi {
+			return s
+		}
+		return "\033[1m" + s + "\033[0m"
+	}
+	part := func(indent string, p model.Part) {
+		fmt.Fprintf(w, "%s%9s  %s  %s\n", indent, fsx.Human(p.Bytes), lv[p.Safety], oneLine(p.Name))
+		if p.Explain != "" {
+			fmt.Fprintf(w, "%s             %s\n", indent, oneLine(p.Explain))
+		}
+		for _, t := range p.Top {
+			fmt.Fprintf(w, "%s               · %s\n", indent, oneLine(t))
+		}
+	}
+	for _, inv := range r.Inventories {
+		fmt.Fprintf(w, "\n%s  %s\n%s\n", b(strings.ToUpper(inv.Title)), fsx.Human(inv.Bytes), inv.Intro)
+		for _, it := range inv.Items {
+			tags := ""
+			if it.Installed {
+				tags += " [installed]"
+			}
+			if it.Running {
+				tags += " [running]"
+			}
+			fmt.Fprintf(w, "\n  %s %s%s  %s\n", b(fsx.Human(it.Bytes)), b(oneLine(it.Name)), tags, oneLine(it.Kind))
+			for _, n := range it.Notes {
+				fmt.Fprintf(w, "    %s\n", oneLine(n))
+			}
+			for _, g := range it.Groups {
+				fmt.Fprintf(w, "    profile %s  %s  (%s)\n", fsx.Human(g.Bytes), oneLine(g.Name), oneLine(g.Note))
+				for _, p := range g.Parts {
+					if p.Bytes >= 1<<20 {
+						part("      ", p)
+					}
+				}
+			}
+			for _, p := range it.Parts {
+				if p.Bytes >= 1<<20 {
+					part("    ", p)
+				}
+			}
+		}
+	}
+}

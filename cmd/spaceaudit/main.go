@@ -33,6 +33,7 @@ Usage:
   spaceaudit script [-o file]  review script: every command is commented out
   spaceaudit plan  [-o file]   plan for --level items: runs only verify lines, cleanup lines stay comments
   spaceaudit recheck [-i file] measure again only the items of the last scan (or of a saved .json/.html report)
+  spaceaudit inventory         where the space goes: browsers and profiles, AI tools, languages, Downloads
   spaceaudit rules             print the rule catalog as Markdown
   spaceaudit version
 
@@ -110,7 +111,7 @@ func main() {
 		}
 		return
 	}
-	known := map[string]string{"scan": "", "html": "spaceaudit-report.html", "md": "spaceaudit-report.md", "json": "", "script": "spaceaudit-review.sh", "plan": "spaceaudit-plan.sh"}
+	known := map[string]string{"inventory": "", "scan": "", "html": "spaceaudit-report.html", "md": "spaceaudit-report.md", "json": "", "script": "spaceaudit-review.sh", "plan": "spaceaudit-plan.sh"}
 	def, ok := known[cmd]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
@@ -172,6 +173,8 @@ func main() {
 		report.Script(w, r)
 	case "plan":
 		report.Plan(w, r)
+	case "inventory":
+		report.Inventory(w, r, w == os.Stdout && isatty.IsTerminal(os.Stdout.Fd()))
 	case "html":
 		if err := report.HTML(w, r); err != nil {
 			fail(err)

@@ -72,6 +72,16 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 | Android SDK | React Native, Flutter and Gradle Android builds. | Review. |
 | Simulator caches in `/Library` | Needs root. | Marked sudo. |
 
+## Sizes and verification
+
+| Case | What spaceaudit does |
+|---|---|
+| APFS clones (`cp -c`, pnpm, macOS assets) | Sizes come from `ATTR_CMNEXT_PRIVATESIZE`, the bytes a delete frees. Clones count once; duplicate groups that are clones are not reported. Tested with a real `cp -c` clone. |
+| A huge folder (1.6 million files) | Measures stop only when nothing is read for one minute, not after a fixed time. |
+| Recheck after a scan | Compares the same measure and the same age filter. A stalled or partial item says "not checked". |
+| simctl output differs between Xcode versions | The parser starts a runtime at any non-field line that holds a UUID. Found 0 of 16 runtimes on macOS 15 before the fix. |
+| Other macOS versions | CI runs full and quick scans on macOS 14, 15 and 26 runners and checks guards, parsing, swap, snapshots and simctl. |
+
 ## Delete commands
 
 | Trap | What spaceaudit does |

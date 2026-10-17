@@ -33,6 +33,7 @@ func Run(o Options) model.Report {
 	if !o.Quick {
 		steps = append(steps, "Walking the home folder", "Project build folders and worktrees", "Duplicate files")
 	}
+	steps = append(steps, "Inventory: browsers, AI tools, languages, Downloads")
 	if o.Events != nil {
 		o.Events(model.Event{Step: 1, Steps: len(steps), Title: steps[0], Titles: steps})
 	}
@@ -89,9 +90,11 @@ func Run(o Options) model.Report {
 	findings = append(findings, e.apps()...)
 	findings = append(findings, e.downloads()...)
 
+	var cands []candidate
 	if !o.Quick {
 		step(6, "")
 		w := e.walkHome()
+		cands = w.cands
 		step(7, strconv.Itoa(len(w.cands))+" build folders, "+strconv.Itoa(len(w.worktrees))+" worktrees")
 		findings = append(findings, e.projectFindings(w.cands)...)
 		findings = append(findings, e.worktreeFindings(w.worktrees)...)
@@ -110,6 +113,9 @@ func Run(o Options) model.Report {
 	if dropped > 0 {
 		e.warn(strconv.Itoa(dropped) + " findings were dropped because their paths hold control characters (such as a line break). Commands for such paths are unsafe to copy. Inspect them by hand.")
 	}
+	step(len(steps)-1, "")
+	rep.Inventories = []model.Inventory{e.browserInventory(), e.aiInventory(), e.languageInventory(cands), e.downloadsInventory()}
+
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Safety.Rank() != findings[j].Safety.Rank() {
 			return findings[i].Safety.Rank() < findings[j].Safety.Rank()

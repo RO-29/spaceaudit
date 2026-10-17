@@ -79,20 +79,65 @@ type Fact struct {
 
 // Report is the full scan output.
 type Report struct {
-	Tool        string    `json:"tool"`
-	Version     string    `json:"version"`
-	GeneratedAt time.Time `json:"generatedAt"`
-	Host        string    `json:"host"`
-	MacOS       string    `json:"macos"`
-	Home        string    `json:"home"`
-	DurationSec float64   `json:"durationSec"`
-	Volume      Volume    `json:"volume"`
-	Areas       []Area    `json:"areas"`
-	Unexplained int64     `json:"unexplained"`
-	Facts       []Fact    `json:"facts"`
-	Totals      Totals    `json:"totals"`
-	Findings    []Finding `json:"findings"`
-	Warnings    []string  `json:"warnings"`
+	Tool        string      `json:"tool"`
+	Version     string      `json:"version"`
+	GeneratedAt time.Time   `json:"generatedAt"`
+	Host        string      `json:"host"`
+	MacOS       string      `json:"macos"`
+	Home        string      `json:"home"`
+	DurationSec float64     `json:"durationSec"`
+	Volume      Volume      `json:"volume"`
+	Areas       []Area      `json:"areas"`
+	Unexplained int64       `json:"unexplained"`
+	Facts       []Fact      `json:"facts"`
+	Totals      Totals      `json:"totals"`
+	Findings    []Finding   `json:"findings"`
+	Inventories []Inventory `json:"inventories,omitempty"`
+	Warnings    []string    `json:"warnings"`
+}
+
+// Part is one measured folder inside an inventory item, with what it holds.
+type Part struct {
+	Name    string   `json:"name"`
+	Path    string   `json:"path,omitempty"`
+	Bytes   int64    `json:"bytes"`
+	Explain string   `json:"explain,omitempty"`
+	Safety  Safety   `json:"safety,omitempty"`
+	Partial bool     `json:"partial,omitempty"`
+	Top     []string `json:"top,omitempty"` // largest members, for aggregated parts
+}
+
+// InvGroup is a sub-unit of an item, such as one browser profile.
+type InvGroup struct {
+	Name  string `json:"name"`
+	Path  string `json:"path,omitempty"`
+	Note  string `json:"note,omitempty"`
+	Bytes int64  `json:"bytes"`
+	Parts []Part `json:"parts"`
+}
+
+// InvItem is one browser, AI tool, language or Downloads category.
+type InvItem struct {
+	Name      string     `json:"name"`
+	Kind      string     `json:"kind,omitempty"`
+	Path      string     `json:"path,omitempty"`
+	App       string     `json:"app,omitempty"`
+	AppBytes  int64      `json:"appBytes,omitempty"`
+	Installed bool       `json:"installed,omitempty"`
+	Running   bool       `json:"running,omitempty"`
+	Bytes     int64      `json:"bytes"`
+	Groups    []InvGroup `json:"groups,omitempty"`
+	Parts     []Part     `json:"parts,omitempty"`
+	Notes     []string   `json:"notes,omitempty"`
+}
+
+// Inventory explains where space goes in one area. It holds no commands.
+type Inventory struct {
+	Key   string    `json:"key"`
+	Title string    `json:"title"`
+	Intro string    `json:"intro"`
+	Bytes int64     `json:"bytes"`
+	Items []InvItem `json:"items"`
 }
 
 // Event is one structured progress update. Front ends use it to draw the scan screen.

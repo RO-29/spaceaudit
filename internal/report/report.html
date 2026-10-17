@@ -79,6 +79,27 @@ pre{margin:0;background:var(--code);border:1px solid var(--line);border-radius:8
 .facts td{padding:6px 10px 6px 0;border-bottom:1px solid var(--line);font-size:13.5px;vertical-align:top}
 .facts td:first-child{color:var(--ink3);white-space:nowrap}
 footer{margin-top:28px;font-size:12.5px;color:var(--ink3);padding-bottom:70px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tab{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:8px 14px;cursor:pointer;font-size:14px;color:var(--ink2)}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.tab small{opacity:.65;margin-left:6px;font-variant-numeric:tabular-nums}
+.inv{border:1px solid var(--line);border-radius:12px;margin-bottom:10px;overflow:hidden;background:var(--panel)}
+.inv>summary{list-style:none;cursor:pointer;padding:14px 16px;display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:center}
+.inv>summary::-webkit-details-marker{display:none}
+.inv .nm{font-weight:620;font-size:15.5px}
+.pill{display:inline-block;font-size:11px;border-radius:99px;padding:1px 8px;margin-left:6px;vertical-align:1px;border:1px solid var(--line);color:var(--ink3)}
+.pill.run{color:var(--review);border-color:color-mix(in srgb,var(--review) 45%,transparent)}
+.stack{grid-column:1/3;display:flex;height:10px;border-radius:99px;overflow:hidden;background:var(--panel2)}
+.stack span{height:100%}
+.inv .in{padding:0 16px 14px;display:grid;gap:12px}
+.ptable{width:100%;border-collapse:collapse;font-size:13.5px}
+.ptable td{padding:6px 8px 6px 0;border-top:1px solid var(--line);vertical-align:top}
+.ptable td.psz{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;width:80px}
+.ptable .ex{color:var(--ink3);font-size:12.5px}
+.ptable .top{font:12px ui-monospace,Menlo,monospace;color:var(--ink3);margin-top:3px}
+.prof{border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.prof h5{margin:0 0 4px;font-size:14px;display:flex;justify-content:space-between}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
 .sticky{position:sticky;top:0;z-index:5;background:var(--panel);padding-top:6px;margin-top:-6px}
 .f>summary{grid-template-columns:22px 76px 1fr auto}
 .pick{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;margin:0}
@@ -128,6 +149,14 @@ kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-b
   <div class="toolbar"><input type="search" id="q" placeholder="Search title, path or reason   ( / )"><select id="cat"></select><select id="sort"><option value="safety">Sort: safety, then size</option><option value="size">Sort: size</option><option value="age">Sort: oldest change</option></select><button class="btn" id="pickvis">Select visible safe</button></div></div>
   <div class="sub" style="margin-bottom:10px">Tick items to build a plan. <kbd>/</kbd> search · <kbd>Esc</kbd> clear · <kbd>e</kbd> expand all</div>
   <div id="list"></div>
+</div>
+
+<div class="card" style="margin-top:14px">
+  <h2>Inventory: where the space goes</h2>
+  <div class="sub" style="margin:-8px 0 12px">A map, not advice: each part says what it holds and how safe it is to clear. Commands are in the recommendations above.</div>
+  <div class="tabs" id="invtabs"></div>
+  <div id="invintro" class="sub" style="margin-bottom:12px"></div>
+  <div id="invlist"></div>
 </div>
 
 <div class="grid two" style="margin-top:14px">
@@ -273,6 +302,25 @@ gaps.push('"Last used" comes from Spotlight or from app data folders. It is a si
 $('#gaps').innerHTML=gaps.map(g=>`<li>${esc(g)}</li>`).join('');
 addEventListener('keydown',e=>{if(e.target.matches('input,select'))return;if(e.key==='/'){e.preventDefault();$('#q').focus()}if(e.key==='e')$('#expand').click()});
 $('#q').addEventListener('keydown',e=>{if(e.key==='Escape'){$('#q').value='';list();$('#q').blur()}});
+
+// Inventory tabs.
+const INV=R.inventories||[];let invKey=(INV[0]||{}).key;
+const sc={safe:'var(--safe)',review:'var(--review)',risky:'var(--risky)',keep:'var(--keep)'};
+const stack=(parts,total)=>`<div class="stack">${parts.filter(p=>p.bytes>0).map(p=>`<span title="${esc(p.name)} · ${H(p.bytes)}" style="width:${100*p.bytes/Math.max(1,total)}%;background:${sc[p.safety]||'var(--other)'}"></span>`).join('')}</div>`;
+const ptable=parts=>`<table class="ptable">${parts.filter(p=>p.bytes>0).map(p=>`<tr><td><span class="dot" style="background:${sc[p.safety]||'var(--other)'}"></span>${esc(p.name)}${p.partial?' <span class="pill">partial</span>':''}<div class="ex">${esc(p.explain||'')}</div>${(p.top||[]).length?`<div class="top">${p.top.map(esc).join('<br>')}</div>`:''}</td><td class="psz">${H(p.bytes)}</td></tr>`).join('')}</table>`;
+function inv(){
+  $('#invtabs').innerHTML=INV.map(v=>`<button class="tab ${v.key===invKey?'on':''}" data-k="${v.key}">${esc(v.title)}<small>${H(v.bytes)}</small></button>`).join('');
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{invKey=t.dataset.k;inv()});
+  const v=INV.find(x=>x.key===invKey);if(!v){$('#invlist').innerHTML='<div class="empty">No inventory in this report.</div>';return}
+  $('#invintro').textContent=v.intro;
+  $('#invlist').innerHTML=(v.items||[]).map(it=>{
+    const parts=(it.parts||[]).slice();(it.groups||[]).forEach(g=>g.parts.forEach(p=>parts.push(p)));
+    return `<details class="inv"><summary><div><span class="nm">${esc(it.name)}</span>${it.kind?`<span class="pill">${esc(it.kind)}</span>`:''}${it.installed?'<span class="pill">installed</span>':''}${it.running?'<span class="pill run">running</span>':''}${it.appBytes?`<span class="pill">app ${H(it.appBytes)}</span>`:''}</div><b>${H(it.bytes)}</b>${stack(parts,it.bytes)}</summary>
+    <div class="in">${(it.notes||[]).length?`<div class="sub">${it.notes.map(esc).join('<br>')}</div>`:''}
+    ${(it.groups||[]).map(g=>`<div class="prof"><h5><span>${esc(g.name)} <span class="sub">${esc(g.note||'')}</span></span><span>${H(g.bytes)}</span></h5>${ptable(g.parts)}</div>`).join('')}
+    ${(it.parts||[]).length?ptable(it.parts):''}</div></details>`}).join('')||'<div class="empty">Nothing found.</div>';
+}
+inv();
 
 chips();list();plan();['#q','#cat','#sort'].forEach(s=>$(s).addEventListener('input',list));
 
