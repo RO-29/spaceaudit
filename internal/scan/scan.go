@@ -157,12 +157,21 @@ func Run(o Options) model.Report {
 	rep.Totals = totals(findings)
 	if len(e.skipped) > 0 && fsx.NoPrompt {
 		var names []string
+		apps := 0
 		for p := range e.skipped {
-			if e.skipped[p] == "privacy" {
-				names = append(names, e.Pretty(p))
+			if e.skipped[p] != "privacy" {
+				continue
 			}
+			if fsx.Under(p, filepath.Join(o.Home, "Library/Containers")) || fsx.Under(p, filepath.Join(o.Home, "Library/Group Containers")) {
+				apps++
+				continue
+			}
+			names = append(names, e.Pretty(p))
 		}
 		sort.Strings(names)
+		if apps > 0 {
+			names = append(names, "other apps' data ("+strconv.Itoa(apps)+" folders)")
+		}
 		if len(names) > 0 {
 			e.fact("not opened (privacy)", strings.Join(limit(names, 6), ", "), "These need Full Disk Access. Their space is in the not-explained total.")
 		}
