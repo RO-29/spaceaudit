@@ -95,6 +95,22 @@ Every front end lets you build a plan from the findings you choose. A plan is a 
 --home DIR    scan another home folder
 ```
 
+## How a delete command is built
+
+spaceaudit prints delete commands. It never runs them. Every delete command comes from one function, and each one has this shape:
+
+```sh
+p='/Users/you/project/node_modules'; n='node_modules'; [ "${p##*/}" = "$n" ] && [ -d "$p" ] && [ ! -L "$p" ] && rm -rf -- "$p"
+```
+
+- The path is absolute and single-quoted. There is no `$HOME`, no glob and no second path on the line.
+- If the path is cut, edited or empty, the name check fails and nothing runs.
+- If the target is missing or is a symbolic link, nothing runs. "Delete the contents" uses `find -P ... -mindepth 1 -maxdepth 1`, which never follows a link out of the folder.
+- No command is made for `/`, your home folder, a top-level folder of your home or of `~/Library`, system roots, cloud folders (iCloud Drive, CloudStorage, DriveFS, Dropbox), a symbolic link, or a path with `..` or a control character. A finding with such a path shows "No delete command" and the reason.
+- Placeholders are plain words (`NAME`, `VERSION`), never `<name>`, which a shell reads as a redirection.
+
+Tests run these commands for real in a temporary folder, in `sh` and `zsh`, with an empty `HOME`, sibling folders with similar names, symbolic links that point outside, and names with spaces, quotes, `$` and backticks. They also damage each command (empty path, path cut to the parent or to the home folder, lost quote) and prove that nothing is deleted.
+
 ## Safety design
 
 - No code path can delete. `internal/safety_test.go` scans the source for `os.Remove`, `os.Rename`, `os.WriteFile`, `syscall.Unlink` and `exec.Command`, and fails on any match outside the allowlisted runner.
@@ -103,6 +119,7 @@ Every front end lets you build a plan from the findings you choose. A plan is a 
 - A plan runs only verify commands. A test fails when a plan line is anything else.
 - Every verify command must be read-only. A test checks each one against a list of read-only commands, and it fails on `-delete`, `-exec`, `rm`, `prune` or `clean`. (`npm cache verify` is not on that list: npm's documentation says it garbage-collects the cache.)
 - The only file it writes is the report that you ask for.
+- A finding whose path holds a control character (for example a line break in a folder name) is dropped, and every text field is flattened to one line, so a file name cannot inject a command into a script.
 
 ## Limits
 

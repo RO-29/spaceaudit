@@ -40,20 +40,6 @@ func git(t *testing.T, dir string, args ...string) {
 	}
 }
 
-func TestQuoting(t *testing.T) {
-	e, home := testEnv(t)
-	got := e.Q(filepath.Join(home, "it's a dir/x"))
-	if got != `"$HOME"/'it'\''s a dir/x'` {
-		t.Fatalf("Q = %s", got)
-	}
-	if Trash(`/a/b"c`) != "" || Trash(`/a/it's`) != "" {
-		t.Fatal("Trash must refuse paths it cannot quote")
-	}
-	if !strings.HasPrefix(e.Rm(true, "/x"), "sudo rm -rf -- '/x'") {
-		t.Fatal(e.Rm(true, "/x"))
-	}
-}
-
 func TestArtifactJudgement(t *testing.T) {
 	e, home := testEnv(t)
 	proj := filepath.Join(home, "proj")
@@ -176,7 +162,8 @@ func TestWorktreeIgnoredFilesAreReported(t *testing.T) {
 var readOnlyVerify = []string{"du ", "sudo du ", "ls ", "find ", "cat ", "mdls ", "file ", "shasum ", "grep ", "git --no-optional-locks ", "git -C ",
 	"docker system df", "brew cleanup -n", "brew autoremove --dry-run", "tmutil listlocalsnapshots", "xcrun simctl list", "go env", "yarn cache dir",
 	"pnpm store status", "pip3 cache info", "uv cache dir", "poetry cache list", "conda clean --all --dry-run", "rustup toolchain list", "pod cache list",
-	"ollama list", "huggingface-cli scan-cache", "lsof ", "pyenv versions", "vagrant box list", "minikube profile list"}
+	"ollama list", "huggingface-cli scan-cache", "lsof ", "pyenv versions", "vagrant box list", "minikube profile list",
+	"nix-env --list-generations", "tart list", "rbenv versions", "conda env list", "xcrun simctl runtime list", "tmutil listlocalsnapshots"}
 
 func checkVerify(t *testing.T, where string, cmds []string) {
 	t.Helper()
@@ -187,7 +174,7 @@ func checkVerify(t *testing.T, where string, cmds []string) {
 				ok = true
 			}
 		}
-		bad := regexp.MustCompile(`-delete|-exec|\brm\b|--force|prune|clean(\s|$)|\bpurge\b|> `).MatchString(strings.Split(c, "|")[0])
+		bad := regexp.MustCompile(`-delete|-exec|\brm\b|--force|(^|\s)prune\b|clean(\s|$)|\bpurge\b|> `).MatchString(strings.Split(c, "|")[0])
 		if !ok || (bad && !strings.Contains(c, "--dry-run") && !strings.HasPrefix(c, "brew cleanup -n")) {
 			t.Errorf("%s: verify command is not read-only: %q", where, c)
 		}
@@ -263,6 +250,7 @@ func TestNodeVersionsKeepsDefault(t *testing.T) {
 	}
 	found := false
 	for _, f := range got {
+		checkVerify(t, "node", f.Verify)
 		if strings.Contains(f.Title, "v20.1.0") {
 			found = true
 			if !contains(f.Risks, "global npm packages") {

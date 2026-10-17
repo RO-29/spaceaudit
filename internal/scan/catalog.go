@@ -4,20 +4,22 @@ import "github.com/RO-29/spaceaudit/internal/model"
 
 // Rule is one known location. {p} in a command becomes the quoted path; {rm} becomes a delete of that path.
 type Rule struct {
-	ID       string
-	Category string
-	Title    string
-	Paths    []string
-	PerPath  bool // one finding per matched path, not one for all
-	Safety   model.Safety
-	Reasons  []string
-	Risks    []string
-	Verify   []string
-	Commands []string
-	Tool     string   // Commands need this binary; without it the rule falls back to {rm}
-	Quit     []string // process names that must not run
-	Restore  string
-	Sudo     bool
+	ID         string
+	Category   string
+	Title      string
+	Paths      []string
+	PerPath    bool // one finding per matched path, not one for all
+	Safety     model.Safety
+	Reasons    []string
+	Risks      []string
+	Verify     []string
+	Commands   []string
+	Tool       string   // Commands need this binary; without it the rule falls back to {rm}
+	Quit       []string // process names that must not run
+	Restore    string
+	Sudo       bool
+	Confidence string // "high" unless the rule rests on community sources
+	OlderDays  int    // the command removes only files older than this, so only those are measured
 }
 
 const (
@@ -67,8 +69,8 @@ var catalog = []Rule{
 	{ID: "poetry-venvs", Category: catDev, Title: "Poetry virtual environments", Paths: []string{"~/Library/Caches/pypoetry/virtualenvs/*"}, PerPath: true, Safety: model.Review,
 		Reasons: []string{"Poetry keeps one virtual environment per project here."},
 		Risks:   []string{"The project needs poetry install before it runs again. Packages that you added by hand with pip are lost."},
-		Verify:  []string{"ls {p}"}, Commands: []string{"{rm}"}, Restore: "cd <project> && poetry install"},
-	{ID: "conda-pkgs", Category: catPkg, Title: "Conda package cache", Paths: []string{"~/miniconda3/pkgs", "~/anaconda3/pkgs", "~/miniforge3/pkgs", "~/opt/anaconda3/pkgs"}, Safety: model.Safe,
+		Verify:  []string{"ls {p}"}, Commands: []string{"{rm}"}, Restore: "cd PROJECT && poetry install"},
+	{ID: "conda-pkgs", Category: catPkg, Title: "Conda package cache", Paths: []string{"~/miniconda3/pkgs", "~/anaconda3/pkgs", "~/miniforge3/pkgs", "~/mambaforge/pkgs", "~/micromamba/pkgs", "~/opt/anaconda3/pkgs", "/opt/homebrew/Caskroom/miniconda/base/pkgs"}, Safety: model.Safe,
 		Reasons: []string{"Conda keeps package archives after it installs them."},
 		Verify:  []string{"conda clean --all --dry-run"}, Commands: []string{"conda clean --all --yes"}, Tool: "conda", Restore: "Conda downloads packages again when it needs them."},
 	{ID: "go-build", Category: catDev, Title: "Go build cache", Paths: []string{"~/Library/Caches/go-build"}, Safety: model.Safe,
@@ -86,7 +88,7 @@ var catalog = []Rule{
 	{ID: "rustup-toolchains", Category: catDev, Title: "Rust toolchains", Paths: []string{"~/.rustup/toolchains"}, Safety: model.Review,
 		Reasons: []string{"Old toolchains stay after an update."},
 		Risks:   []string{"A project with rust-toolchain.toml needs its pinned version. Remove only versions that no project pins."},
-		Verify:  []string{"rustup toolchain list"}, Commands: []string{"rustup toolchain uninstall <name>"}, Tool: "rustup", Restore: "rustup toolchain install <name>"},
+		Verify:  []string{"rustup toolchain list"}, Commands: []string{"rustup toolchain uninstall NAME"}, Tool: "rustup", Restore: "rustup toolchain install NAME"},
 	{ID: "gradle-caches", Category: catDev, Title: "Gradle caches and wrapper downloads", Paths: []string{"~/.gradle/caches", "~/.gradle/wrapper/dists", "~/.gradle/daemon"}, Safety: model.Safe,
 		Reasons: []string{"Gradle downloads dependencies and wrapper versions again."},
 		Risks:   []string{"Stop the Gradle daemon first, or it can write while you delete.", "Keep ~/.gradle/gradle.properties: it can hold credentials. This rule does not include it."},
@@ -114,7 +116,7 @@ var catalog = []Rule{
 		Reasons: []string{"mongodb-memory-server downloads these binaries again for tests."}, Verify: []string{"ls {p}"}, Commands: []string{"{rm}"}, Restore: "The next test run downloads them."},
 	{ID: "playwright", Category: catDev, Title: "Playwright and Puppeteer browsers", Paths: []string{"~/Library/Caches/ms-playwright", "~/.cache/puppeteer"}, Safety: model.Safe,
 		Reasons: []string{"These are test browsers that the tools download again."},
-		Verify:  []string{"ls {p}"}, Commands: []string{"{rm}"}, Restore: "npx playwright install"},
+		Verify:  []string{"ls {p}"}, Commands: []string{"npx playwright uninstall --all"}, Restore: "npx playwright install"},
 
 	// Xcode and simulators.
 	{ID: "xcode-deriveddata", Category: catDev, Title: "Xcode DerivedData", Paths: []string{"~/Library/Developer/Xcode/DerivedData"}, Safety: model.Safe,
@@ -135,15 +137,15 @@ var catalog = []Rule{
 	{ID: "simulator-caches", Category: catDev, Title: "Simulator system caches", Paths: []string{"/Library/Developer/CoreSimulator/Caches"}, Safety: model.Safe, Sudo: true,
 		Reasons: []string{"The simulator rebuilds its dyld cache when it starts."},
 		Risks:   []string{"The folder belongs to root, so the command needs sudo. The next simulator start is slower."},
-		Verify:  []string{"sudo du -sh {p}"}, Commands: []string{"sudo rm -rf -- {p}/*"}, Restore: "Start a simulator."},
+		Verify:  []string{"sudo du -sh {p}"}, Commands: []string{"{contents}"}, Restore: "Start a simulator."},
 	{ID: "android-avd", Category: catDev, Title: "Android emulator images", Paths: []string{"~/.android/avd"}, Safety: model.Review,
 		Reasons: []string{"Each virtual device keeps a full disk image."},
 		Risks:   []string{"Apps and data inside the emulator go away."},
-		Verify:  []string{"ls {p}"}, Commands: []string{"Delete devices in Android Studio > Device Manager."}, Restore: "Make the device again in Device Manager."},
+		Verify:  []string{"ls {p}"}, Commands: []string{"avdmanager list avd   # then: avdmanager delete avd -n NAME, or Android Studio > Device Manager"}, Restore: "Make the device again in Device Manager."},
 	{ID: "android-sdk", Category: catDev, Title: "Android SDK", Paths: []string{"~/Library/Android/sdk"}, Safety: model.Review,
 		Reasons: []string{"The SDK is large and stays after you remove Android Studio."},
 		Risks:   []string{"React Native, Flutter and Gradle builds for Android need it."},
-		Verify:  []string{"du -sh {p}/*"}, Commands: []string{"{rm}"}, Restore: "Android Studio > SDK Manager downloads it again."},
+		Verify:  []string{"du -sh {p}/*"}, Commands: []string{"sdkmanager --list_installed   # then remove single packages: sdkmanager --uninstall \"PACKAGE_ID\""}, Restore: "Android Studio > SDK Manager downloads it again."},
 
 	// Editors.
 	{ID: "vscode-vsix", Category: catIDE, Title: "Cached extension installers", Paths: []string{"~/Library/Application Support/Code/CachedExtensionVSIXs", "~/Library/Application Support/Cursor/CachedExtensionVSIXs", "~/Library/Application Support/Windsurf/CachedExtensionVSIXs"}, PerPath: true, Safety: model.Safe,
@@ -165,20 +167,20 @@ var catalog = []Rule{
 	{ID: "ollama-models", Category: catAI, Title: "Ollama models", Paths: []string{"~/.ollama/models"}, Safety: model.Review,
 		Reasons: []string{"Local models are many gigabytes each."},
 		Risks:   []string{"Download again takes time and bandwidth. A custom Modelfile model must be built again."},
-		Verify:  []string{"ollama list"}, Commands: []string{"ollama rm <model>"}, Tool: "ollama", Restore: "ollama pull <model>"},
+		Verify:  []string{"ollama list"}, Commands: []string{"ollama rm MODEL"}, Tool: "ollama", Restore: "ollama pull MODEL"},
 	{ID: "huggingface", Category: catAI, Title: "Hugging Face model cache", Paths: []string{"~/.cache/huggingface/hub"}, Safety: model.Review,
 		Reasons: []string{"Model weights download again on the next use."},
 		Risks:   []string{"Gated models need your token to download again.", "Keep ~/.cache/huggingface/token and stored_tokens: they are your login. This rule includes only hub/."},
-		Verify:  []string{"du -sh {p}/*"}, Commands: []string{"hf cache ls   # then: hf cache rm <repo>   (huggingface_hub 1.0+; older versions: huggingface-cli delete-cache)"}, Restore: "The next load downloads the model."},
+		Verify:  []string{"du -sh {p}/*"}, Commands: []string{"hf cache ls   # then: hf cache rm REPO   (huggingface_hub 1.0+; older versions: huggingface-cli delete-cache)"}, Restore: "The next load downloads the model."},
 	{ID: "lmstudio", Category: catAI, Title: "LM Studio models", Paths: []string{"~/.lmstudio/models", "~/.cache/lm-studio/models"}, Safety: model.Review,
 		Reasons: []string{"Local models are many gigabytes each."}, Verify: []string{"ls {p}"}, Commands: []string{"Delete models in LM Studio > My Models."}, Restore: "Download them again in LM Studio."},
-	{ID: "claude-transcripts", Category: catAI, Title: "Claude Code session transcripts", Paths: []string{"~/.claude/projects"}, Safety: model.Review,
-		Reasons: []string{"Each session keeps a full transcript as a .jsonl file."},
-		Risks:   []string{"claude --resume needs these files.", "Each project folder also holds memory/, which is Claude's long-term memory. Never delete the whole folder: remove only old .jsonl files."},
-		Verify:  []string{"find {p} -name '*.jsonl' -mtime +90 | wc -l"}, Commands: []string{"find {p} -name '*.jsonl' -mtime +90 -not -path '*/memory/*' -print   # add -delete after you check the list"}, Restore: "None."},
+	{ID: "claude-transcripts", Category: catAI, Title: "Claude Code transcripts older than 90 days", Paths: []string{"~/.claude/projects"}, Safety: model.Review,
+		Reasons:   []string{"Each session keeps a full transcript as a .jsonl file."},
+		Risks:     []string{"claude --resume needs these files.", "Each project folder also holds memory/, which is Claude's long-term memory. Never delete the whole folder: remove only old .jsonl files."},
+		OlderDays: 90, Verify: []string{"find {p} -name '*.jsonl' -mtime +90 | wc -l"}, Commands: []string{"find {p} -name '*.jsonl' -mtime +90 -not -path '*/memory/*' -print   # add -delete after you check the list"}, Restore: "None."},
 	{ID: "codex-tmp", Category: catAI, Title: "Codex temporary files", Paths: []string{"~/.codex/.tmp", "~/.codex/cache"}, Safety: model.Safe,
 		Reasons: []string{"Codex makes these again."}, Quit: []string{"codex"}, Verify: []string{"du -sh {p}"}, Commands: []string{"{rm}"}, Restore: "Nothing to restore."},
-	{ID: "codex-sessions", Category: catAI, Title: "Codex session history", Paths: []string{"~/.codex/sessions"}, Safety: model.Review,
+	{ID: "codex-sessions", Category: catAI, Title: "Codex sessions older than 90 days", Paths: []string{"~/.codex/sessions"}, Safety: model.Review, OlderDays: 90,
 		Reasons: []string{"Each Codex run keeps a log."}, Risks: []string{"codex resume needs these files."},
 		Verify: []string{"ls {p}"}, Commands: []string{"find {p} -type f -mtime +90 -print   # add -delete after you check the list"}, Restore: "None."},
 
@@ -227,19 +229,19 @@ var catalog = []Rule{
 	{ID: "pyenv-versions", Category: catDev, Title: "pyenv Python version", Paths: []string{"~/.pyenv/versions/*"}, PerPath: true, Safety: model.Review,
 		Reasons: []string{"Each Python version that pyenv built is a full install."},
 		Risks:   []string{"Projects with a .python-version file that names this version stop working. Virtual environments made from it break."},
-		Verify:  []string{"pyenv versions"}, Commands: []string{"pyenv uninstall <version>"}, Tool: "pyenv", Restore: "pyenv install <version>"},
+		Verify:  []string{"pyenv versions"}, Commands: []string{"pyenv uninstall VERSION"}, Tool: "pyenv", Restore: "pyenv install VERSION"},
 	{ID: "asdf-mise-installs", Category: catDev, Title: "asdf or mise tool version", Paths: []string{"~/.asdf/installs/*/*", "~/.local/share/mise/installs/*/*"}, PerPath: true, Safety: model.Review,
 		Reasons: []string{"Each version of each tool is a full install."},
 		Risks:   []string{"Projects whose .tool-versions or mise.toml names this version stop working."},
-		Verify:  []string{"ls {p}"}, Commands: []string{"asdf uninstall <tool> <version>   # or: mise uninstall <tool>@<version>"}, Restore: "asdf install or mise install"},
+		Verify:  []string{"ls {p}"}, Commands: []string{"asdf uninstall TOOL VERSION   # or: mise uninstall TOOL@VERSION"}, Restore: "asdf install or mise install"},
 	{ID: "bazel", Category: catDev, Title: "Bazel output base", Paths: []string{"/private/var/tmp/_bazel_*"}, Safety: model.Safe,
 		Reasons: []string{"Bazel keeps build outputs and its repository cache here."},
-		Risks:   []string{"The next build is a full build."}, Verify: []string{"du -sh {p}"}, Commands: []string{"bazel clean --expunge   # run in each workspace"}, Restore: "Build again."},
+		Risks:   []string{"The next build is a full build. bazel clean --expunge cleans one workspace only. Bazel writes outputs read-only, so a plain rm fails."}, Verify: []string{"du -sh {p}"}, Commands: []string{"bazel clean --expunge   # run in each workspace"}, Restore: "Build again."},
 	{ID: "pre-commit", Category: catDev, Title: "pre-commit hook environments", Paths: []string{"~/.cache/pre-commit"}, Safety: model.Safe,
 		Reasons: []string{"pre-commit installs hook environments here again on the next commit."}, Verify: []string{"du -sh {p}"}, Commands: []string{"pre-commit clean"}, Tool: "pre-commit", Restore: "The next commit installs them."},
 	{ID: "vagrant-boxes", Category: catVM, Title: "Vagrant boxes", Paths: []string{"~/.vagrant.d/boxes"}, Safety: model.Review,
 		Reasons: []string{"Base boxes download again when a Vagrantfile needs them."}, Risks: []string{"Boxes that you packaged yourself cannot download again."},
-		Verify: []string{"vagrant box list"}, Commands: []string{"vagrant box prune"}, Tool: "vagrant", Restore: "vagrant box add <name>"},
+		Verify: []string{"vagrant box list"}, Commands: []string{"vagrant box prune"}, Tool: "vagrant", Restore: "vagrant box add NAME"},
 	{ID: "minikube", Category: catVM, Title: "minikube cache and VMs", Paths: []string{"~/.minikube"}, Safety: model.Review,
 		Reasons: []string{"minikube keeps images, ISOs and cluster disks here."}, Risks: []string{"Deleting it deletes every local cluster and its data."},
 		Verify: []string{"minikube profile list"}, Commands: []string{"minikube delete --all --purge"}, Tool: "minikube", Restore: "minikube start"},
@@ -259,16 +261,16 @@ var catalog = []Rule{
 		Commands: []string{"Remove large attachments in Mail, or remove the account and add it again."}},
 
 	// System.
-	{ID: "user-logs", Category: catSystem, Title: "Your application logs", Paths: []string{"~/Library/Logs"}, Safety: model.Safe,
+	{ID: "user-logs", Category: catSystem, Title: "Application logs older than 30 days", Paths: []string{"~/Library/Logs"}, Safety: model.Safe, OlderDays: 30,
 		Reasons: []string{"Apps write new logs as they run."},
 		Risks:   []string{"You lose old crash reports that a support team can ask for."},
 		Verify:  []string{"du -sh {p}/*"}, Commands: []string{"find {p} -type f -mtime +30 -print   # add -delete after you check the list"}, Restore: "Nothing to restore."},
 	{ID: "sleepimage", Category: catSystem, Title: "Sleep image", Paths: []string{"/private/var/vm/sleepimage"}, Safety: model.Keep,
 		Reasons:  []string{"macOS writes RAM here during hibernation. macOS makes it again after a delete."},
 		Commands: []string{"Do not delete. macOS manages this file."}},
-	{ID: "swapfiles", Category: catSystem, Title: "Swap files", Paths: []string{"/private/var/vm/swapfile*"}, Safety: model.Keep,
+	{ID: "swapfiles", Category: catSystem, Title: "Swap files", Paths: []string{"/System/Volumes/VM/swapfile*"}, Safety: model.Keep,
 		Reasons:  []string{"macOS uses these as virtual memory. A restart releases them."},
-		Commands: []string{"Do not delete. Restart the Mac to release swap."}},
+		Commands: []string{"Do not delete. A restart releases swap, but only if memory pressure is lower afterwards."}},
 	{ID: "clt", Category: catSystem, Title: "Command Line Tools", Paths: []string{"/Library/Developer/CommandLineTools"}, Safety: model.Keep,
 		Reasons:  []string{"git, clang, make and python3 come from here when Xcode is not the selected developer folder."},
 		Commands: []string{"Do not delete."}},

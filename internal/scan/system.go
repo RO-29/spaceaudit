@@ -117,7 +117,8 @@ func (e *Env) apps() []model.Finding {
 			f.Safety = model.Risky
 			if strings.HasPrefix(xsel, p) {
 				f.Blockers = append(f.Blockers, "xcode-select points into this app. git, clang and /usr/bin/python3 stop working when it goes.")
-				f.Commands = []string{"sudo xcode-select -s /Library/Developer/CommandLineTools", "sudo rm -rf -- " + e.Q(p)}
+				rmx, _ := e.del(delAuto, p, true)
+				f.Commands = []string{"sudo xcode-select -s /Library/Developer/CommandLineTools", rmx}
 				if !fsx.Exists("/Library/Developer/CommandLineTools") {
 					f.Commands = append([]string{"xcode-select --install"}, f.Commands...)
 				}
@@ -168,6 +169,13 @@ func (e *Env) downloads() []model.Finding {
 		if d.IsDir() && p != dir && strings.Count(strings.TrimPrefix(p, dir), "/") > 2 {
 			return filepath.SkipDir
 		}
+		if d.IsDir() {
+			for _, ext := range bundleExt {
+				if strings.HasSuffix(d.Name(), ext) {
+					return filepath.SkipDir // a file inside a bundle is part of it, never a separate delete
+				}
+			}
+		}
 		if !d.IsDir() {
 			if info, err := d.Info(); err == nil && info.Size() >= 100<<20 {
 				files = append(files, p)
@@ -188,7 +196,7 @@ func (e *Env) downloads() []model.Finding {
 		f := model.Finding{
 			ID: id("download", p), Rule: "download", Category: catUser, Title: filepath.Base(p), Paths: []string{p},
 			Bytes: u.Bytes, Files: 1, Safety: model.Review, Confidence: "medium", Modified: u.Newest, LastUsed: used, UsedSource: "Spotlight kMDItemLastUsedDate",
-			Verify: []string{"ls -lh " + e.Q(p)}, Commands: []string{e.Rm(false, p)}, Restore: "Download it again from its source.",
+			Verify: []string{"ls -lh " + e.Q(p)}, Commands: []string{e.delOnly(p)}, Restore: "Download it again from its source.",
 		}
 		if t := Trash(p); t != "" {
 			f.Alternate = []string{t}
@@ -208,10 +216,9 @@ func (e *Env) downloads() []model.Finding {
 		switch ext {
 		case ".dmg", ".pkg":
 			if app := matchInstalled(filepath.Base(p), installed); app != "" {
-				f.Safety = model.Safe
-				f.Reasons = append(f.Reasons, "This installer looks already installed as "+app+".")
+				f.Reasons = append(f.Reasons, "The name matches the installed "+app+", so this can be its installer. Check that it is not a disk image of your own files.")
 			} else {
-				f.Reasons = append(f.Reasons, "This is an installer. You can download it again.")
+				f.Reasons = append(f.Reasons, "A disk image or package. It can be an installer, or an image of your own files.")
 			}
 		case ".zip", ".tar", ".gz", ".tgz", ".7z", ".rar":
 			base := strings.TrimSuffix(p, ext)
@@ -249,15 +256,12 @@ func installedApps() []string {
 
 var wordRe = regexp.MustCompile(`[A-Za-z]{3,}`)
 
+// matchInstalled needs the whole app name (spaces ignored) in the file name, not only the first word.
 func matchInstalled(file string, apps []string) string {
-	words := wordRe.FindAllString(strings.ToLower(file), -1)
-	if len(words) == 0 {
-		return ""
-	}
-	first := words[0]
+	f := strings.ToLower(strings.ReplaceAll(file, " ", ""))
 	for _, a := range apps {
-		aw := wordRe.FindAllString(strings.ToLower(a), -1)
-		if len(aw) > 0 && aw[0] == first {
+		n := strings.ToLower(strings.ReplaceAll(a, " ", ""))
+		if len(n) >= 4 && strings.Contains(f, n) {
 			return a + ".app"
 		}
 	}
@@ -308,8 +312,9 @@ func (e *Env) largeFiles(ls []large, bundles []string, covered []string) []model
 
 var vmDisks = []struct{ name, glob, hint string }{
 	{"Docker Desktop", "~/Library/Containers/com.docker.docker/Data/vms/*/data/Docker.raw", "Docker Desktop > Settings > Resources > Disk image size, or Troubleshoot > Clean / Purge data"},
-	{"OrbStack", "~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img.raw", "OrbStack frees space inside the image by itself after a prune"},
-	{"Colima", "~/.colima/_lima/*/diffdisk", "colima delete removes the VM and its images"},
+	{"OrbStack", "~/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img*", "OrbStack frees space inside the image by itself after a prune"},
+	{"Colima", "~/.colima/_lima/*/diffdisk", "since v0.9 container data is on a separate disk: colima delete keeps it, colima delete --data removes it. Space returns after a restart or colima ssh -- sudo fstrim -a"},
+	{"Colima data", "~/.colima/_lima/_disks/*/datadisk", "colima delete --data removes it with every image and volume"},
 	{"Rancher Desktop", "~/Library/Application Support/rancher-desktop/lima/*/diffdisk", "Rancher Desktop > Troubleshooting > Factory Reset"},
 	{"Podman", "~/.local/share/containers/podman/machine/*/*.raw", "podman machine rm"},
 	{"UTM", "~/Library/Containers/com.utmapp.UTM/Data/Documents/*.utm", "Remove the VM in UTM"},
@@ -382,7 +387,7 @@ func (e *Env) containers() []model.Finding {
 	add("Build Cache", "Docker build cache", model.Safe, "docker builder prune", "BuildKit layer cache from old builds.", "The next build of each image is slower.", "The next build fills it again.")
 	add("Images", "Docker images that no container uses", model.Review, "docker image prune -a", "Images with no container, including old tags.", "Images that you built and did not push are lost. Pulled images download again.", "docker pull or docker build")
 	add("Containers", "Stopped Docker containers", model.Review, "docker container prune", "Containers that are not running.", "Files written inside a stopped container are lost.", "docker run makes new containers.")
-	add("Local Volumes", "Docker volumes that no container uses", model.Risky, "docker volume ls -f dangling=true   # then: docker volume rm <name>", "Volumes are where containers keep databases and other data.", "A volume can hold the only copy of a local database. Inspect each one before you remove it.", "None.")
+	add("Local Volumes", "Docker volumes that no container uses", model.Risky, "docker volume ls -f dangling=true   # then: docker volume rm NAME", "Volumes are where containers keep databases and other data.", "A volume can hold the only copy of a local database. Inspect each one before you remove it.", "None.")
 	return out
 }
 
@@ -421,11 +426,11 @@ func (e *Env) homebrew() []model.Finding {
 	return []model.Finding{{
 		ID: id("brew"), Rule: "brew-cleanup", Category: catPkg, Title: "Homebrew old versions and downloads", Paths: []string{strings.TrimSpace(cache)},
 		Bytes: b, Safety: model.Safe, Confidence: "high",
-		Reasons:  []string{"brew cleanup -n reports that it can free about " + m[1] + ": old formula versions and cached downloads."},
+		Reasons:  []string{"brew cleanup -n reports that it can free about " + m[1] + ": old formula versions and cached downloads.", "A cask stays in Caskroom when you drag its app to the Trash. brew cleanup does not remove it: run brew list --cask, then brew uninstall --cask NAME."},
 		Risks:    []string{"You cannot roll back to a removed old version without a new download.", "A formula that you pinned with brew pin is kept."},
 		Verify:   []string{"brew cleanup -n", "brew autoremove --dry-run"},
 		Commands: []string{"brew cleanup --prune=all"},
-		Restore:  "brew install <formula>@<version> when a versioned formula exists.",
+		Restore:  "brew install FORMULA@VERSION when a versioned formula exists.",
 	}}
 }
 
@@ -433,20 +438,22 @@ func (e *Env) homebrew() []model.Finding {
 func (e *Env) systemFacts() []model.Finding {
 	var out []model.Finding
 	if snaps, err := probe.Run(20*time.Second, "tmutil", "listlocalsnapshots", "/"); err == nil {
-		n := strings.Count(snaps, "com.apple.")
-		e.fact("local snapshots", strconv.Itoa(n), "Data that you delete stays on disk until the APFS snapshots that hold it are gone.")
+		n := strings.Count(snaps, "com.apple.TimeMachine.")
+		upd := strings.Count(snaps, "com.apple.os.update-")
+		e.fact("local snapshots", strconv.Itoa(n)+" Time Machine, "+strconv.Itoa(upd)+" macOS update", "Deleted data stays on disk while a snapshot holds it. macOS update snapshots are part of the update and need no action; tmutil does not remove them.")
 		if n > 0 {
 			out = append(out, model.Finding{
-				ID: id("snapshots"), Rule: "apfs-snapshots", Category: catSystem, Title: strconv.Itoa(n) + " local APFS snapshots", Safety: model.Review, Confidence: "medium",
-				Reasons:  []string{"Time Machine and macOS updates keep local snapshots. They hold deleted files on disk."},
+				ID: id("snapshots"), Rule: "apfs-snapshots", Category: catSystem, Title: strconv.Itoa(n) + " local Time Machine snapshots", Safety: model.Review, Confidence: "medium",
+				Reasons:  []string{"Time Machine keeps local snapshots. They hold the blocks of deleted files, and macOS removes them by itself after about 24 hours or when space is low."},
 				Risks:    []string{"After a delete, you can lose the local restore point that Time Machine made. Your Time Machine disk backups stay."},
 				Verify:   []string{"tmutil listlocalsnapshots /"},
-				Commands: []string{"sudo tmutil thinlocalsnapshots / 999999999999 4"}, NeedsSudo: true,
+				Commands: []string{"tmutil thinlocalsnapshots / 999999999999 4   # or remove all: sudo tmutil deletelocalsnapshots /"}, NeedsSudo: true,
 				Notes: []string{"The scan cannot measure snapshot size. macOS also removes them by itself when space is low."},
 			})
 		}
 	}
 	out = append(out, e.deletedOpen()...)
+	out = append(out, e.simRuntimes()...)
 	tmp := os.TempDir()
 	if u := fsx.Measure(tmp); u.Bytes >= e.Opt.MinBytes {
 		out = append(out, model.Finding{

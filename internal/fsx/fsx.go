@@ -45,20 +45,24 @@ func Provider(p, home string) bool {
 // Home is the folder that Provider checks against. The scanner sets it once.
 var Home string
 
-// MeasureWithin is Measure with a time limit. A folder that blocks returns what was counted so far.
+// MeasureWithin is Measure with a time limit. The walk stops at the deadline and keeps what it counted.
+// A syscall that blocks for good (a privacy prompt) is abandoned by the outer timer.
 func MeasureWithin(root string, limit time.Duration) Usage {
 	done := make(chan Usage, 1)
-	go func() { done <- Measure(root) }()
+	deadline := time.Now().Add(limit)
+	go func() { done <- measure(root, deadline) }()
 	select {
 	case u := <-done:
 		return u
-	case <-time.After(limit):
+	case <-time.After(limit + 5*time.Second):
 		return Usage{Exists: true, TimedOut: true}
 	}
 }
 
 // Measure walks root on one device. Hard links are counted once.
-func Measure(root string) Usage {
+func Measure(root string) Usage { return measure(root, time.Time{}) }
+
+func measure(root string, deadline time.Time) Usage {
 	var u Usage
 	st, err := os.Lstat(root)
 	if err != nil {
@@ -79,6 +83,10 @@ func Measure(root string) Usage {
 	}
 	seen := map[uint64]bool{}
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if !deadline.IsZero() && u.Files%512 == 0 && time.Now().After(deadline) {
+			u.TimedOut = true
+			return fs.SkipAll
+		}
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) {
 				u.Denied++

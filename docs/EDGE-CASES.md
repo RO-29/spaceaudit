@@ -72,6 +72,35 @@ This file lists the cases where a simple "delete the big folder" gives a wrong r
 | Android SDK | React Native, Flutter and Gradle Android builds. | Review. |
 | Simulator caches in `/Library` | Needs root. | Marked sudo. |
 
+## Delete commands
+
+| Trap | What spaceaudit does |
+|---|---|
+| `HOME` is empty or another user pastes the line | Paths are absolute literals. `$HOME` is never used. |
+| A pasted line is cut, or the path is edited | The command checks the last path component against a second literal (`n=`). A changed path does nothing. |
+| The target is a symbolic link | No command is made; the command also checks `[ ! -L ]` at run time. |
+| A link inside the target points outside | `rm -rf` removes the link only; contents deletes use `find -P`. |
+| A glob such as `dir/*` misses dotfiles or follows a link | Contents deletes use `find -P "$p" -mindepth 1 -maxdepth 1`. |
+| A rule points at a broad folder | `/`, home, top-level home and `~/Library` folders, system roots and cloud folders get no command. |
+| A folder name holds a line break | The finding is dropped; text is flattened to one line. |
+| `<name>` placeholders | Replaced by `NAME`, because `<` and `>` are shell redirections. |
+| Verify lines that need sudo in a plan | Written as comments, so running a plan never asks for a password. |
+| Sizes larger than what a command frees | Rules whose command uses `find -mtime` measure only those files. |
+
+## Research corrections (2026-10-17)
+
+| Was | Now | Source |
+|---|---|---|
+| "1 local APFS snapshot", thin it with tmutil | Snapshots are split into Time Machine and macOS update snapshots. Update snapshots get no command: tmutil does not remove them. | `man tmutil`, Eclectic Light Company |
+| Swap files in `/private/var/vm` | `/System/Volumes/VM/swapfile*` | checked on macOS 26 |
+| Simulator runtimes not covered | Read from `xcrun simctl runtime list -v`; removed only with `simctl runtime delete`, because the images are under SIP | Apple developer forums, simctl help |
+| Any folder named `Cache` in an app is a web cache | Only inside a Chromium profile (two of Preferences, Local State, Local Storage, IndexedDB ...); Signal, Telegram, DriveFS, Resolve, password managers are excluded | Signal blog, red-team fixture |
+| A disk image whose first word matches an app is an installer | The whole app name must be in the file name, and the finding stays review | red-team fixture |
+| Ignored `tmp/`, `.vscode/` in a worktree are junk | Every ignored file that is not build output counts, and build folders are searched for secret-like names | red-team fixture |
+| A git error means "not tracked" | A git error makes the finding review | red-team fixture |
+| OrbStack image `data.img.raw` only | `data.img*` (both names exist) | checked on this Mac |
+| Colima: `colima delete` removes images | Since v0.9 the data disk stays; `colima delete --data` removes it | Colima FAQ |
+
 ## Verify commands
 
 Every verify command must only read. `npm cache verify` looks like a check but garbage-collects the cache, and `git status` can rewrite `.git/index`. The tool uses `du` for npm and `git --no-optional-locks` for git. A test checks every verify command.

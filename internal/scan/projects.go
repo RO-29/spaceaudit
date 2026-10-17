@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -242,7 +243,7 @@ func (e *Env) walkHome() walkResult {
 
 // addTree measures a pruned folder into the totals and stops the walk from entering it.
 func (e *Env) addTree(r *walkResult, p string) error {
-	u := fsx.Measure(p)
+	u := fsx.MeasureWithin(p, 3*time.Minute)
 	e.sizes.Store(p, u)
 	r.total += u.Bytes
 	r.top[second(e.Home, p)] += u.Bytes
@@ -292,8 +293,8 @@ func (e *Env) projectFindings(cands []candidate) []model.Finding {
 		}
 		a := artifactByName[k]
 		r := Rule{ID: "artifact-" + k, Category: catBuild, Title: k + " folders (" + strconv.Itoa(len(paths)) + ")", Safety: a.Safety,
-			Reasons: []string{a.Reason}, Verify: []string{"find \"$HOME\" -name '" + k + "' -type d -prune -not -path '*/Library/*' -not -path '*/.*/*' | head"},
-			Commands: []string{"find \"$HOME\" -name '" + k + "' -type d -prune -not -path '*/Library/*' -not -path '*/.*/*' -exec rm -rf -- {} +"}, Restore: a.Restore}
+			Reasons: []string{a.Reason}, Verify: []string{"ls -d {p}"},
+			Commands: []string{"{rm}"}, Restore: a.Restore}
 		f := e.build(r, paths, u)
 		out = append(out, f)
 	}
@@ -311,18 +312,28 @@ func (e *Env) judgeArtifact(c candidate) *model.Finding {
 	reasons := []string{a.Reason}
 	var risks, blockers []string
 	if top != "" {
-		if Tracked(top, c.path) {
+		tracked, terr := Tracked(top, c.path)
+		ignored, ierr := Ignored(top, c.path)
+		if terr != nil || ierr != nil {
+			// git could not answer, so the folder can be committed source: never call it safe.
+			safety = model.Review
+			risks = append(risks, "git could not read "+e.Pretty(top)+", so the scan cannot tell whether this folder is committed. Run the verify command first.")
+		} else if tracked {
 			return nil // git tracks files here, so it is source code, not output
 		}
-		if !Ignored(top, c.path) {
+		if terr == nil && ierr == nil && !ignored {
 			if a.MustIgnore {
 				safety = model.Review
 				risks = append(risks, "git does not ignore this folder, so it can be new source code that you did not commit yet.")
 			}
-		} else {
+		} else if terr == nil && ierr == nil {
 			reasons = append(reasons, "git ignores this folder, so the repository does not need it.")
 		}
 		r := e.repo(top)
+		if r.err != nil && safety == model.Safe {
+			safety = model.Review
+			risks = append(risks, "git status failed in "+e.Pretty(top)+", so the scan cannot see uncommitted work.")
+		}
 		if !r.lastCommit.IsZero() {
 			reasons = append(reasons, "Last commit in "+e.Pretty(top)+" was "+Ago(e.Now, r.lastCommit)+".")
 		}
@@ -383,7 +394,8 @@ func (e *Env) judgeArtifact(c candidate) *model.Finding {
 	if u.Bytes < e.Opt.MinBytes {
 		return nil
 	}
-	cmds := []string{e.Rm(false, c.path)}
+	rmc, _ := e.del(delAuto, c.path, false)
+	cmds := []string{rmc}
 	if c.kind == "target" && hasAny(proj, []string{"Cargo.toml"}) && haveTool("cargo") {
 		cmds = []string{"cargo clean --manifest-path " + e.Q(filepath.Join(proj, "Cargo.toml"))}
 	}
@@ -456,7 +468,9 @@ func linkedPackages(nm string) []string {
 }
 
 // junkIgnored are ignored names that hold only regenerable output.
-var junkIgnored = map[string]bool{".DS_Store": true, ".idea": true, ".vscode": true, ".cache": true, "tmp": true, ".eslintcache": true, "logs": true, ".code-review-graph": true}
+var junkIgnored = map[string]bool{".DS_Store": true, ".eslintcache": true}
+
+var secretName = regexp.MustCompile(`(?i)(^\.env($|\.)|\.(pem|key|p12|pfx|jks|keystore|mobileprovision|tfstate|tfvars|kdbx)$|credential|secret|token|id_rsa|id_ed25519)`)
 
 // precious lists git-ignored files in a worktree that are not regenerable output, such as .env or terraform.tfstate.
 func precious(wt string) []string {
@@ -471,12 +485,35 @@ func precious(wt string) []string {
 		}
 		p := strings.TrimSuffix(strings.Trim(line[3:], `"`), "/")
 		base := filepath.Base(p)
-		if _, art := artifactByName[base]; art || junkIgnored[base] || strings.HasSuffix(base, ".log") || strings.HasSuffix(base, ".tsbuildinfo") {
+		if _, art := artifactByName[base]; art {
+			if base != "node_modules" {
+				keep = append(keep, secretsIn(filepath.Join(wt, p), p)...)
+			}
+			continue
+		}
+		if junkIgnored[base] || strings.HasSuffix(base, ".log") || strings.HasSuffix(base, ".tsbuildinfo") {
 			continue
 		}
 		keep = append(keep, p)
 	}
 	return keep
+}
+
+// secretsIn lists files with secret-like names inside a build folder, such as build/release.keystore.
+func secretsIn(dir, rel string) []string {
+	var out []string
+	n := 0
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		n++
+		if err != nil || n > 20000 {
+			return fs.SkipAll
+		}
+		if !d.IsDir() && secretName.MatchString(d.Name()) {
+			out = append(out, filepath.Join(rel, strings.TrimPrefix(p, dir+"/")))
+		}
+		return nil
+	})
+	return out
 }
 
 // gitActivity is the newest change to git state: staging, checkout, commit or fetch.

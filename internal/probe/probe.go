@@ -22,7 +22,7 @@ var allowed = map[string][][]string{
 	"tmutil":       {{"listlocalsnapshots"}},
 	"mdls":         {{"-raw", "-name"}},
 	"xcode-select": {{"-p"}},
-	"xcrun":        {{"simctl", "list"}},
+	"xcrun":        {{"simctl", "list"}, {"simctl", "runtime", "list"}},
 	"diskutil":     {{"info"}},
 	"df":           {{"-k"}},
 	"go":           {{"env"}},

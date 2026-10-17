@@ -161,27 +161,27 @@ func Script(w io.Writer, r model.Report) {
 			if f.Safety != s {
 				continue
 			}
-			fmt.Fprintf(w, "\n# --- %s  (%s)  [%s]\n", f.Title, fsx.Human(f.Bytes), f.Rule)
+			fmt.Fprintf(w, "\n# --- %s  (%s)  [%s]\n", oneLine(f.Title), fsx.Human(f.Bytes), f.Rule)
 			for _, x := range f.Blockers {
-				fmt.Fprintf(w, "# BLOCKER: %s\n", x)
+				fmt.Fprintf(w, "# BLOCKER: %s\n", oneLine(x))
 			}
 			for _, x := range f.Reasons {
-				fmt.Fprintf(w, "# why:    %s\n", x)
+				fmt.Fprintf(w, "# why:    %s\n", oneLine(x))
 			}
 			for _, x := range f.Risks {
-				fmt.Fprintf(w, "# risk:   %s\n", x)
+				fmt.Fprintf(w, "# risk:   %s\n", oneLine(x))
 			}
 			for _, x := range f.Verify {
-				fmt.Fprintf(w, "# verify: %s\n", x)
+				fmt.Fprintf(w, "# verify: %s\n", oneLine(x))
 			}
 			if f.Restore != "" {
-				fmt.Fprintf(w, "# restore: %s\n", f.Restore)
+				fmt.Fprintf(w, "# restore: %s\n", oneLine(f.Restore))
 			}
 			for _, x := range f.Commands {
-				fmt.Fprintf(w, "# %s\n", strings.ReplaceAll(x, "\n", "\n# "))
+				fmt.Fprintf(w, "# %s\n", oneLine(x))
 			}
 			for _, x := range f.Alternate {
-				fmt.Fprintf(w, "#   or: %s\n", x)
+				fmt.Fprintf(w, "#   or: %s\n", oneLine(x))
 			}
 		}
 	}
@@ -197,24 +197,38 @@ func Plan(w io.Writer, r model.Report) {
 	fmt.Fprintln(w, "# Running this file runs only the verify commands. Every cleanup command is a comment: uncomment one only after you check it.")
 	fmt.Fprintln(w, "# "+disclaimer)
 	for _, f := range r.Findings {
-		fmt.Fprintf(w, "\n# --- [%s] %s (%s)\n", f.Safety, f.Title, fsx.Human(f.Bytes))
+		fmt.Fprintf(w, "\n# --- [%s] %s (%s)\n", f.Safety, oneLine(f.Title), fsx.Human(f.Bytes))
 		for _, x := range f.Blockers {
-			fmt.Fprintf(w, "# BLOCKER: %s\n", x)
+			fmt.Fprintf(w, "# BLOCKER: %s\n", oneLine(x))
 		}
 		for _, x := range f.Risks {
-			fmt.Fprintf(w, "# risk: %s\n", x)
+			fmt.Fprintf(w, "# risk: %s\n", oneLine(x))
 		}
-		fmt.Fprintf(w, "echo %s\n", shellWord("== "+f.Title))
+		fmt.Fprintf(w, "echo %s\n", shellWord("== "+oneLine(f.Title)))
 		for _, x := range f.Verify {
-			fmt.Fprintln(w, x)
+			if strings.HasPrefix(x, "sudo ") {
+				fmt.Fprintf(w, "# needs an admin password, so it does not run here: %s\n", oneLine(x))
+				continue
+			}
+			fmt.Fprintln(w, oneLine(x))
 		}
 		for _, x := range f.Commands {
-			fmt.Fprintf(w, "# %s\n", strings.ReplaceAll(x, "\n", "\n# "))
+			fmt.Fprintf(w, "# %s\n", oneLine(x))
 		}
 		if f.Restore != "" {
-			fmt.Fprintf(w, "# restore: %s\n", f.Restore)
+			fmt.Fprintf(w, "# restore: %s\n", oneLine(f.Restore))
 		}
 	}
+}
+
+// oneLine keeps any text inside one script line, so a name with a line break cannot become a command.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 func shellWord(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

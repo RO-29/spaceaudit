@@ -53,6 +53,7 @@ type repoInfo struct {
 	top        string
 	lastCommit time.Time
 	dirty      int
+	err        error // git could not read the repo, so nothing about it is known
 }
 
 func newEnv(o Options) *Env {
@@ -110,20 +111,29 @@ func (e *Env) measure(p string) fsx.Usage {
 // UsersOf returns the programs that hold a file open at or below path.
 func (e *Env) UsersOf(path string) []string {
 	path = strings.TrimSuffix(path, "/")
-	i := sort.Search(len(e.open), func(i int) bool { return e.open[i].path >= path })
+	roots := []string{path}
+	if r, err := filepath.EvalSymlinks(path); err == nil && r != path {
+		roots = append(roots, r) // lsof reports /private/var for /var
+	}
 	seen := map[int]bool{}
 	var names []string
-	for ; i < len(e.open); i++ {
-		p := e.open[i].path
-		if p != path && !strings.HasPrefix(p, path+"/") {
-			break
-		}
+	add := func(i int) {
 		pid := e.open[i].pid
 		if pid == os.Getpid() || seen[pid] {
-			continue
+			return
 		}
 		seen[pid] = true
 		names = append(names, e.procs[pid]+" (pid "+strconv.Itoa(pid)+")")
+	}
+	for _, root := range roots {
+		// Siblings such as "Foo.bar" sort between "Foo" and "Foo/", so search the two ranges separately.
+		for i := sort.Search(len(e.open), func(i int) bool { return e.open[i].path >= root }); i < len(e.open) && e.open[i].path == root; i++ {
+			add(i)
+		}
+		pre := root + "/"
+		for i := sort.Search(len(e.open), func(i int) bool { return e.open[i].path >= pre }); i < len(e.open) && strings.HasPrefix(e.open[i].path, pre); i++ {
+			add(i)
+		}
 	}
 	return names
 }
@@ -167,28 +177,42 @@ func (e *Env) repo(top string) *repoInfo {
 			r.lastCommit = time.Unix(ts, 0)
 		}
 	}
-	if out, err := probe.Run(30*time.Second, "git", "-C", top, "status", "--porcelain", "--untracked-files=no"); err == nil {
-		r.dirty = strings.Count(out, "\n")
+	out, err := probe.Run(60*time.Second, "git", "-C", top, "status", "--porcelain", "--untracked-files=normal")
+	if err != nil {
+		r.err = err
+		return r
 	}
+	r.dirty = strings.Count(out, "\n")
 	return r
 }
 
-// Tracked reports whether git tracks any file under path.
-func Tracked(top, path string) bool {
-	out, err := probe.Run(20*time.Second, "git", "-C", top, "ls-files", "--", path)
-	return err == nil && strings.TrimSpace(out) != ""
+// Tracked reports whether git tracks any file under path. An error means git could not answer.
+func Tracked(top, path string) (bool, error) {
+	out, err := probe.Run(30*time.Second, "git", "-C", top, "ls-files", "--", path)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
-// Ignored reports whether git ignores path.
-func Ignored(top, path string) bool {
-	_, err := probe.Run(10*time.Second, "git", "-C", top, "check-ignore", "-q", "--", path)
-	return err == nil
+// Ignored reports whether git ignores path. check-ignore exits 1 for "not ignored" and 128 for an error.
+func Ignored(top, path string) (bool, error) {
+	_, err := probe.Run(15*time.Second, "git", "-C", top, "check-ignore", "-q", "--", path)
+	if err == nil {
+		return true, nil
+	}
+	if strings.Contains(err.Error(), "exit status 1:") || strings.HasSuffix(err.Error(), "exit status 1: ") {
+		return false, nil
+	}
+	return false, err
 }
 
 // Q quotes a path for a shell command. Paths in the home folder use "$HOME" so the line stays portable.
 func (e *Env) Q(p string) string {
-	if rel, ok := strings.CutPrefix(p, e.Home+"/"); ok {
-		return `"$HOME"/` + shq(rel)
+	if real, _ := os.UserHomeDir(); real == e.Home {
+		if rel, ok := strings.CutPrefix(p, e.Home+"/"); ok {
+			return `"$HOME"/` + shq(rel)
+		}
 	}
 	return shq(p)
 }
@@ -201,19 +225,6 @@ func Trash(p string) string {
 		return ""
 	}
 	return `osascript -e 'tell application "Finder" to delete POSIX file "` + p + `"'`
-}
-
-// Rm builds the delete command for paths.
-func (e *Env) Rm(sudo bool, paths ...string) string {
-	q := make([]string, len(paths))
-	for i, p := range paths {
-		q[i] = e.Q(p)
-	}
-	cmd := "rm -rf -- " + strings.Join(q, " ")
-	if sudo {
-		cmd = "sudo " + cmd
-	}
-	return cmd
 }
 
 // Pretty shortens a path for display.

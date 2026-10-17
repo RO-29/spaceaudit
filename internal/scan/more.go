@@ -24,10 +24,12 @@ func (e *Env) nodeVersions() []model.Finding {
 		{"nvm", "~/.nvm/versions/node/*", "~/.nvm/alias/default", "nvm uninstall"},
 		{"fnm", "~/.local/share/fnm/node-versions/*", "~/.local/share/fnm/aliases/default", "fnm uninstall"},
 		{"fnm", "~/Library/Application Support/fnm/node-versions/*", "~/Library/Application Support/fnm/aliases/default", "fnm uninstall"},
-		{"volta", "~/.volta/tools/image/node/*", "", "rm -rf (volta has no uninstall for a Node version)"},
+		{"volta", "~/.volta/tools/image/node/*", "", ""},
 	}
-	current, _ := probe.Run(5*time.Second, "node", "--version")
-	current = strings.TrimSpace(current)
+	current := ""
+	if nb := os.Getenv("NVM_BIN"); nb != "" {
+		current = filepath.Base(filepath.Dir(nb)) // the version that this shell uses
+	}
 	var out []model.Finding
 	for _, m := range mgrs {
 		dirs := fsx.Glob(m.glob, e.Home)
@@ -41,6 +43,18 @@ func (e *Env) nodeVersions() []model.Finding {
 				def = filepath.Base(t)
 			} else if b, err := os.ReadFile(p); err == nil {
 				def = strings.TrimSpace(string(b))
+			}
+			// An alias such as lts/iron or node points to another alias file.
+			for i := 0; i < 3 && def != "" && !strings.ContainsAny(def[:1], "0123456789v"); i++ {
+				b, err := os.ReadFile(filepath.Join(filepath.Dir(p), def))
+				if err != nil {
+					def = "" // unknown default: report nothing rather than a wrong version
+					break
+				}
+				def = strings.TrimSpace(string(b))
+			}
+			if def == "" {
+				continue
 			}
 		}
 		for _, d := range dirs {
@@ -60,13 +74,17 @@ func (e *Env) nodeVersions() []model.Finding {
 					}
 				}
 			}
+			cmd := m.uninstall + " " + v
+			if m.uninstall == "" {
+				cmd, _ = e.del(delAuto, d, false) // volta has no command to remove one Node version
+			}
 			f := model.Finding{
 				ID: id("node", d), Rule: "node-version", Category: catDev, Title: m.name + " Node.js " + v, Paths: []string{d},
 				Bytes: u.Bytes, Files: u.Files, Safety: model.Review, Confidence: "high", Modified: u.Newest,
-				Reasons:  []string{"It is not the default version (" + orNone(def) + ") and not the current version (" + orNone(current) + ")."},
+				Reasons:  []string{"It is not the default version (" + def + ")" + map[bool]string{true: " and not the version of this shell (" + current + ")", false: ""}[current != ""] + "."},
 				Risks:    []string{"A project with .nvmrc, .node-version or engines that names this version needs it."},
-				Verify:   []string{"grep -rl --include=.nvmrc --include=.node-version " + strings.TrimPrefix(v, "v") + " ~ 2>/dev/null | head"},
-				Commands: []string{m.uninstall + " " + v},
+				Verify:   []string{"find ~ -maxdepth 4 -path ~/Library -prune -o \\( -name .nvmrc -o -name .node-version \\) -print 2>/dev/null | xargs grep -l " + strings.TrimPrefix(v, "v") + " 2>/dev/null"},
+				Commands: []string{cmd},
 				Restore:  m.name + " install " + v,
 			}
 			if globals > 0 {
@@ -168,7 +186,8 @@ func (e *Env) duplicates(files []large) []model.Finding {
 		extra := g[0].bytes * int64(len(g)-1)
 		var cmds []string
 		for _, p := range paths[1:] {
-			cmds = append(cmds, e.Rm(false, p)+"   # keeps the oldest copy: "+e.Pretty(paths[0]))
+			c, _ := e.del(delAuto, p, false)
+			cmds = append(cmds, c+"   # keeps the oldest copy: "+e.Pretty(paths[0]))
 		}
 		quoted := make([]string, len(paths))
 		for i, p := range paths {
@@ -244,4 +263,83 @@ func sameInode(g []large) bool {
 		}
 	}
 	return true
+}
+
+// simRuntimes reads simulator runtimes from simctl. They are disk images under SIP, so only simctl may remove them.
+func (e *Env) simRuntimes() []model.Finding {
+	out, err := probe.Run(30*time.Second, "xcrun", "simctl", "runtime", "list", "-v")
+	if err != nil {
+		return nil
+	}
+	var res []model.Finding
+	var name, image, lastUsed, deletable, ident string
+	flush := func() {
+		if name == "" || image == "" {
+			return
+		}
+		u := fsx.MeasureWithin(image, time.Minute)
+		if u.Bytes < e.Opt.MinBytes {
+			return
+		}
+		used, _ := time.Parse("2006-01-02 15:04:05 -0700", lastUsed)
+		f := model.Finding{
+			ID: id("simrt", ident), Rule: "simulator-runtime", Category: catDev, Title: "Simulator runtime " + name, Paths: []string{image},
+			Bytes: u.Bytes, Files: 1, Safety: model.Review, Confidence: "high", LastUsed: used, UsedSource: "simctl Last Used At",
+			Reasons:  []string{"Xcode keeps each simulator runtime as a disk image. Last used " + Ago(e.Now, used) + "."},
+			Risks:    []string{"Simulators that use this runtime go away. Never delete the image file: it is under System Integrity Protection and simctl tracks it."},
+			Verify:   []string{"xcrun simctl runtime list -v"},
+			Commands: []string{"xcrun simctl runtime delete " + ident + "   # or all unused for 90 days: xcrun simctl runtime delete --notUsedSinceDays 90 --dry-run"},
+			Restore:  "Xcode > Settings > Components, or xcodebuild -downloadPlatform iOS",
+		}
+		if deletable != "YES" {
+			f.Safety = model.Keep
+			f.Commands = []string{"simctl says this runtime is not deletable. Manage it in Xcode > Settings > Components."}
+		}
+		res = append(res, f)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.Contains(t, " - ") && strings.Contains(t, "(") && !strings.Contains(t, ":"):
+			flush()
+			name, image, lastUsed, deletable = t, "", "", ""
+			if i := strings.LastIndex(t, " - "); i > 0 {
+				name, ident = t[:i], strings.TrimSpace(t[i+3:])
+			}
+		case strings.HasPrefix(t, "Image Path:"):
+			image = strings.TrimSpace(strings.TrimPrefix(t, "Image Path:"))
+		case strings.HasPrefix(t, "Last Used At:"):
+			lastUsed = strings.TrimSpace(strings.TrimPrefix(t, "Last Used At:"))
+		case strings.HasPrefix(t, "Deletable:"):
+			deletable = strings.TrimSpace(strings.TrimPrefix(t, "Deletable:"))
+		}
+	}
+	flush()
+	return res
+}
+
+// sandboxCaches covers ~/Library/Containers/<app>/Data/Library/Caches, which the generic rule does not see.
+func (e *Env) sandboxCaches(claimed []string) []model.Finding {
+	dirs, _ := filepath.Glob(filepath.Join(e.Home, "Library/Containers/*/Data/Library/Caches"))
+	return parallel(e.Opt.Jobs, len(dirs), func(i int) *model.Finding {
+		d := dirs[i]
+		if isClaimed(d, claimed) {
+			return nil
+		}
+		u := fsx.MeasureWithin(d, time.Minute)
+		if u.Bytes < e.Opt.MinBytes {
+			return nil
+		}
+		app := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(d))))
+		r := Rule{ID: "sandbox-cache", Category: catBrowser, Title: "Cache of " + app, Safety: model.Review,
+			Reasons: []string{"A sandboxed app keeps its cache here. Apps are expected to rebuild their caches."},
+			Risks:   []string{"Some apps keep downloads in their cache folder. Check what is inside first."},
+			Verify:  []string{"du -sh {p}/*"}, Commands: []string{"{contents}"}, Restore: "The app fills the cache again."}
+		if strings.HasPrefix(app, "com.apple.") {
+			r.Risks = append(r.Risks, "This is a macOS app. Delete only when it is large, then restart.")
+		}
+		f := e.build(r, []string{d}, u)
+		e.blockApp(&f, filepath.Dir(filepath.Dir(filepath.Dir(d))))
+		return &f
+	})
 }

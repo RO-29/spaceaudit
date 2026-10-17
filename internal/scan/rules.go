@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/RO-29/spaceaudit/internal/fsx"
@@ -18,7 +19,7 @@ import (
 func (e *Env) build(r Rule, paths []string, u fsx.Usage) model.Finding {
 	f := model.Finding{
 		ID: id(r.ID, strings.Join(paths, "|")), Rule: r.ID, Category: r.Category, Title: r.Title, Paths: paths,
-		Bytes: u.Bytes, Files: u.Files, Safety: r.Safety, Confidence: "high", Modified: u.Newest,
+		Bytes: u.Bytes, Files: u.Files, Safety: r.Safety, Confidence: orDefault(r.Confidence, "high"), Modified: u.Newest,
 		Reasons: append([]string{}, r.Reasons...), Risks: append([]string{}, r.Risks...), Restore: r.Restore, NeedsSudo: r.Sudo,
 	}
 	toolOK := r.Tool == "" || haveTool(r.Tool)
@@ -34,7 +35,7 @@ func (e *Env) build(r Rule, paths []string, u fsx.Usage) model.Finding {
 		cmds = []string{"{rm}"}
 	}
 	for _, c := range cmds {
-		if strings.Contains(c, "{p}") || strings.Contains(c, "{rm}") {
+		if strings.Contains(c, "{p}") || strings.Contains(c, "{rm}") || strings.Contains(c, "{contents}") {
 			for _, p := range paths {
 				f.Commands = append(f.Commands, e.expand(c, p, r.Sudo))
 			}
@@ -88,9 +89,23 @@ func (e *Env) annotate(f *model.Finding, u fsx.Usage) {
 	}
 }
 
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
+}
+
 func (e *Env) expand(tmpl, p string, sudo bool) string {
-	s := strings.ReplaceAll(tmpl, "{rm}", e.Rm(sudo, p))
-	return strings.ReplaceAll(s, "{p}", e.Q(p))
+	if strings.Contains(tmpl, "{rm}") {
+		c, _ := e.del(delAuto, p, sudo)
+		return strings.ReplaceAll(tmpl, "{rm}", c)
+	}
+	if strings.Contains(tmpl, "{contents}") {
+		c, _ := e.del(delContents, p, sudo)
+		return strings.ReplaceAll(tmpl, "{contents}", c)
+	}
+	return strings.ReplaceAll(tmpl, "{p}", e.Q(p))
 }
 
 var toolCache sync.Map
@@ -133,10 +148,13 @@ func (e *Env) staticRules() ([]model.Finding, []string) {
 	res := parallel(e.Opt.Jobs, len(jobs), func(i int) *model.Finding {
 		j := jobs[i]
 		u := measureAll(j.paths)
-		if u.Bytes < e.Opt.MinBytes && j.r.Safety != model.Keep {
+		if j.r.OlderDays > 0 {
+			u = measureOlder(j.paths, e.Now.Add(-time.Duration(j.r.OlderDays)*24*time.Hour))
+		}
+		if !u.TimedOut && u.Bytes < e.Opt.MinBytes && j.r.Safety != model.Keep {
 			return nil
 		}
-		if u.Bytes < 1<<20 {
+		if !u.TimedOut && u.Bytes < 1<<20 {
 			return nil
 		}
 		f := e.build(j.r, j.paths, u)
@@ -165,6 +183,26 @@ func measureAll(paths []string) fsx.Usage {
 		}
 	}
 	return t
+}
+
+// measureOlder counts only files older than cutoff, for rules whose command uses find -mtime.
+func measureOlder(paths []string, cutoff time.Time) fsx.Usage {
+	var u fsx.Usage
+	for _, root := range paths {
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if info, err := d.Info(); err == nil && info.ModTime().Before(cutoff) {
+				if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+					u.Bytes += sys.Blocks * 512
+					u.Files++
+				}
+			}
+			return nil
+		})
+	}
+	return u
 }
 
 func isClaimed(p string, claimed []string) bool {
@@ -198,11 +236,19 @@ func (e *Env) cacheChildren(claimed []string) []model.Finding {
 			return nil
 		}
 		name := filepath.Base(it.path)
+		if lh := findNamed(it.path, "LocalHistory", 3); lh != "" {
+			r := Rule{ID: "cache-folder", Category: catIDE, Title: "Cache: " + name + " (holds IDE local history)", Safety: model.Review,
+				Reasons: []string{"An IDE keeps its caches here, and LocalHistory with them."},
+				Risks:   []string{e.Pretty(lh) + " can be the only copy of edits that you did not commit. Use the IDE's Invalidate Caches, or keep LocalHistory."},
+				Verify:  []string{"du -sh {p}/*"}, Commands: []string{"Use File > Invalidate Caches in the IDE."}}
+			f := e.build(r, []string{it.path}, u)
+			return &f
+		}
 		r := Rule{ID: "cache-folder", Category: catBrowser, Title: "Cache: " + name, Safety: model.Safe,
-			Reasons: []string{"Programs put data here that they can download or compute again. macOS treats this folder as disposable."},
+			Reasons: []string{"Programs put data here that they are expected to download or compute again."},
 			Risks:   []string{"The program is slower the first time and can ask you to log in again."},
 			Verify:  []string{"du -sh {p}/* | sort -h | tail"}, Restore: "The program fills the cache again."}
-		r.Commands = []string{"rm -rf -- {p}/*"}
+		r.Commands = []string{"{contents}"}
 		if it.parent == "~/.cache" {
 			r.Safety = model.Review
 			r.Reasons = []string{"Command-line tools keep caches here. Most rebuild, but some tools keep state in ~/.cache by mistake."}
@@ -223,7 +269,21 @@ func (e *Env) cacheChildren(claimed []string) []model.Finding {
 var webCacheNames = map[string]model.Safety{
 	"Cache": model.Safe, "Code Cache": model.Safe, "GPUCache": model.Safe, "ShaderCache": model.Safe, "GrShaderCache": model.Safe,
 	"GraphiteDawnCache": model.Safe, "DawnGraphiteCache": model.Safe, "DawnWebGPUCache": model.Safe, "component_crx_cache": model.Safe,
-	"ScriptCache": model.Safe, "CacheStorage": model.Review,
+	"ScriptCache": model.Review, "CacheStorage": model.Review,
+}
+
+// webCacheDeny are apps whose folders can hold real data under a cache-like name.
+var webCacheDeny = []string{"Signal", "Telegram Desktop", "Blackmagic Design", "1Password", "Bitwarden", "KeePassXC", "Adobe", "DriveFS", "Obsidian", "Logseq"}
+
+// chromiumProfile reports whether dir looks like a Chromium or Electron profile, so a folder named Cache in it is a web cache.
+func chromiumProfile(dir string) bool {
+	n := 0
+	for _, m := range []string{"Preferences", "Local State", "Local Storage", "Session Storage", "IndexedDB", "Cookies", "Network", "blob_storage", "Code Cache", "GPUCache", "DIPS"} {
+		if fsx.Exists(filepath.Join(dir, m)) {
+			n++
+		}
+	}
+	return n >= 2
 }
 
 // webCaches finds Chromium and Electron cache folders inside each app's Application Support folder.
@@ -239,17 +299,25 @@ func (e *Env) webCaches(claimed []string) []model.Finding {
 	return parallelMulti(e.Opt.Jobs, len(apps), func(i int) []model.Finding {
 		app := apps[i]
 		var safe, sw []string
+		for _, d := range webCacheDeny {
+			if strings.Contains(app, "/"+d) {
+				return nil
+			}
+		}
 		walkDepth(app, 5, func(p, name string) bool {
 			s, ok := webCacheNames[name]
 			if !ok || isClaimed(p, claimed) {
 				return false
 			}
-			if name == "CacheStorage" {
-				if filepath.Base(filepath.Dir(p)) != "Service Worker" {
+			if name == "CacheStorage" || name == "ScriptCache" {
+				if filepath.Base(filepath.Dir(p)) != "Service Worker" || !chromiumProfile(filepath.Dir(filepath.Dir(p))) {
 					return false
 				}
 				sw = append(sw, p)
 				return true
+			}
+			if name != "component_crx_cache" && !chromiumProfile(filepath.Dir(p)) {
+				return false // a folder named Cache in an app that is not Chromium can be real data
 			}
 			if s == model.Safe {
 				safe = append(safe, p)
@@ -294,6 +362,18 @@ func (e *Env) blockApp(f *model.Finding, appDir string) {
 			f.Safety = model.Review
 		}
 	}
+}
+
+// findNamed returns the first folder with this name within depth levels, or "".
+func findNamed(root, name string, depth int) string {
+	found := ""
+	walkDepth(root, depth, func(p, n string) bool {
+		if found == "" && n == name {
+			found = p
+		}
+		return found != ""
+	})
+	return found
 }
 
 // walkDepth calls fn for each folder up to depth. fn returns true to stop descent into that folder.

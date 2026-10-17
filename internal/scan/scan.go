@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,6 +52,7 @@ func Run(o Options) model.Report {
 	findings = append(findings, e.cacheChildren(claimed)...)
 	findings = append(findings, e.webCaches(claimed)...)
 	findings = append(findings, e.sandboxWebCaches(claimed)...)
+	findings = append(findings, e.sandboxCaches(claimed)...)
 	findings = append(findings, e.editorLeftovers()...)
 	findings = append(findings, e.nodeVersions()...)
 	o.Progress("Asking Homebrew and Docker (dry run only)")
@@ -79,6 +81,10 @@ func Run(o Options) model.Report {
 		rep.Unexplained = unexplained(rep.Volume, w.total, e)
 	}
 
+	findings, dropped := sanitize(findings)
+	if dropped > 0 {
+		e.warn(strconv.Itoa(dropped) + " findings were dropped because their paths hold control characters (such as a line break). Commands for such paths are unsafe to copy. Inspect them by hand.")
+	}
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Safety.Rank() != findings[j].Safety.Rank() {
 			return findings[i].Safety.Rank() < findings[j].Safety.Rank()
@@ -103,8 +109,57 @@ func Run(o Options) model.Report {
 	return rep
 }
 
-// totals adds sizes per safety level, and skips a finding that sits inside one already counted.
-func totals(fs []model.Finding) model.Totals {
+// sanitize drops findings with control characters in a path and makes every text field one line,
+// so no generated script line can be broken out of its comment.
+func sanitize(fs []model.Finding) ([]model.Finding, int) {
+	bad := func(s string) bool {
+		return strings.IndexFunc(s, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0
+	}
+	flat := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return ' '
+			}
+			return r
+		}, s)
+	}
+	var out []model.Finding
+	dropped := 0
+	for _, f := range fs {
+		skip := bad(f.Title)
+		for _, p := range f.Paths {
+			skip = skip || bad(p)
+		}
+		if skip {
+			dropped++
+			continue
+		}
+		for _, list := range []*[]string{&f.Reasons, &f.Risks, &f.Blockers, &f.Notes, &f.Verify, &f.Commands, &f.Alternate} {
+			for i := range *list {
+				(*list)[i] = flat((*list)[i])
+			}
+		}
+		f.Restore = flat(f.Restore)
+		out = append(out, f)
+	}
+	return out, dropped
+}
+
+// totals adds sizes per safety level without double counting. Findings with shorter paths go first,
+// so a parent (a worktree) is counted and the child inside it (its node_modules) is skipped.
+func totals(in []model.Finding) model.Totals {
+	fs := append([]model.Finding(nil), in...)
+	depth := func(f model.Finding) int {
+		if len(f.Paths) == 0 {
+			return -1
+		}
+		d := 1 << 30
+		for _, p := range f.Paths {
+			d = min(d, strings.Count(p, "/"))
+		}
+		return d
+	}
+	sort.SliceStable(fs, func(i, j int) bool { return depth(fs[i]) < depth(fs[j]) })
 	var t model.Totals
 	var counted []string
 	for _, f := range fs {
@@ -185,7 +240,7 @@ func unexplained(v model.Volume, home int64, e *Env) int64 {
 	}
 	sum := home
 	for _, p := range []string{"/Applications", "/Library", "/opt", "/usr/local", "/private/var", "/Users/Shared"} {
-		u := fsx.Measure(p)
+		u := fsx.MeasureWithin(p, 3*time.Minute)
 		sum += u.Bytes
 		e.fact("size "+p, fsx.Human(u.Bytes), denyNote(u))
 	}
