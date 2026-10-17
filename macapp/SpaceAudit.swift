@@ -66,7 +66,7 @@ final class LineBuffer: @unchecked Sendable {
     }
 }
 
-struct ScanEvent: Codable { let step: Int; let steps: Int; let title: String; let detail: String?; let files: Int64?; let bytes: Int64?; let found: Int; let foundBytes: Int64 }
+struct ScanEvent: Codable { let step: Int; let steps: Int; let title: String; let detail: String?; let files: Int64?; let bytes: Int64?; let found: Int; let foundBytes: Int64; let titles: [String]? }
 
 struct RecheckItem: Codable, Identifiable { let id: String; let title: String; let safety: String; let category: String; let before: Int64; let now: Int64; let status: String; let note: String? }
 struct RecheckReport: Codable { let checkedAt: Date; let baseScanAt: Date; let volumeBefore: Volume; let volumeNow: Volume; let freed: Int64; let items: [RecheckItem] }
@@ -152,6 +152,7 @@ final class Scanner: ObservableObject {
     }
 
     private func apply(_ ev: ScanEvent) {
+        if let t = ev.titles { for (i, name) in t.enumerated() where stepTitles[i + 1] == nil { stepTitles[i + 1] = name } }
         if ev.files == nil { stepTitles[ev.step] = ev.title }
         if let f = ev.files { files = f }
         if let b = ev.bytes { bytesRead = b }
@@ -508,7 +509,7 @@ struct ScanView: View {
                             else { Image(systemName: "circle").foregroundStyle(.tertiary) }
                         }.frame(width: 18)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(scanner.stepTitles[i] ?? (i == current ? (scanner.event?.title ?? "") : "Waiting")).foregroundStyle(i > current ? .secondary : .primary)
+                            Text(scanner.stepTitles[i] ?? (i == current ? (scanner.event?.title ?? "") : "…")).foregroundStyle(i > current ? .secondary : .primary)
                                 .fontWeight(i == current ? .semibold : .regular)
                             if i == current, !scanner.currentPath.isEmpty {
                                 Text(scanner.currentPath).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)

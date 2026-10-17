@@ -55,6 +55,7 @@ func Recheck(base model.Report, ids map[string]bool) model.RecheckReport {
 		it.Before = before
 		gone := 0
 		var now int64
+		stalled := false
 		for _, p := range f.Paths {
 			if _, err := os.Lstat(p); err != nil {
 				gone++
@@ -66,10 +67,17 @@ func Recheck(base model.Report, ids map[string]bool) model.RecheckReport {
 			} else {
 				u = fsx.MeasureWithin(p, time.Minute)
 			}
+			stalled = stalled || u.TimedOut
 			now += u.Bytes
 		}
 		it.Now = now
 		switch {
+		case stalled:
+			it.Status = "not checked"
+			it.Note = "A folder gave no answer while it was measured, so the size now is not known."
+		case f.Partial:
+			it.Status = "not checked"
+			it.Note = "The scan could not measure this item fully, so a comparison would not be fair."
 		case gone == len(f.Paths):
 			it.Status = "gone"
 		case gone > 0:
@@ -81,7 +89,7 @@ func Recheck(base model.Report, ids map[string]bool) model.RecheckReport {
 		default:
 			it.Status = "unchanged"
 		}
-		if it.Before > it.Now {
+		if it.Before > it.Now && it.Status != "not checked" {
 			out.Freed += it.Before - it.Now
 		}
 		out.Items = append(out.Items, it)

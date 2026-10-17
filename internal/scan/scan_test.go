@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -279,11 +280,16 @@ func TestCloudFoldersAreNeverOpened(t *testing.T) {
 	}
 }
 
-func TestMeasureWithinStops(t *testing.T) {
-	start := time.Now()
-	u := fsx.MeasureWithin("/", time.Millisecond)
-	if !u.TimedOut || time.Since(start) > time.Second {
-		t.Errorf("MeasureWithin did not stop on time: %+v after %s", u, time.Since(start))
+// A big folder must be measured fully: the limit is for a stall, not for total time.
+func TestMeasureWithinFinishesBigFolders(t *testing.T) {
+	_, home := testEnv(t)
+	for i := 0; i < 3000; i++ {
+		write(t, filepath.Join(home, "big", strconv.Itoa(i%50), strconv.Itoa(i)), 4096)
+	}
+	full := fsx.Measure(filepath.Join(home, "big"))
+	u := fsx.MeasureWithin(filepath.Join(home, "big"), 2*time.Second)
+	if u.TimedOut || u.Bytes != full.Bytes || u.Files != 3000 {
+		t.Errorf("MeasureWithin = %d bytes %d files timedOut=%v, want %d bytes 3000 files", u.Bytes, u.Files, u.TimedOut, full.Bytes)
 	}
 }
 
@@ -320,5 +326,30 @@ func TestRecheckStatuses(t *testing.T) {
 	}
 	if r.Freed < 20<<20 {
 		t.Errorf("freed = %d, want at least 20 MB", r.Freed)
+	}
+}
+
+func TestSimRuntimeParserFormats(t *testing.T) {
+	out := `== Disk Images ==
+-- iOS --
+iOS 26.3.1 (23D8133) - 9D47B456-2865-48F9-9E62-A512BF074701
+    State: Ready
+    Deletable: YES
+    Identifier: 11111111-2222-3333-4444-555555555555
+    Last Used At: 2026-07-09 03:09:09 +0000
+    Image Path: /System/Library/AssetsV2/x/094-26194-058.dmg
+iOS 18.2 (22C150) - 1F6E2A30-3C1B-4B4E-9E2A-7A1B2C3D4E5F (Ready)
+    Image Path: /Library/Developer/CoreSimulator/Images/1F6E2A30-3C1B-4B4E-9E2A-7A1B2C3D4E5F.dmg
+    Deletable: NO
+`
+	got := parseSimRuntimes(out)
+	if len(got) != 2 {
+		t.Fatalf("parsed %d runtimes, want 2: %+v", len(got), got)
+	}
+	if got[0].ident != "9D47B456-2865-48F9-9E62-A512BF074701" || got[0].image == "" || got[0].deletable != "YES" || got[0].lastUsed == "" {
+		t.Errorf("first runtime = %+v", got[0])
+	}
+	if got[1].name != "iOS 18.2 (22C150)" || got[1].deletable != "NO" || !strings.HasSuffix(got[1].image, ".dmg") {
+		t.Errorf("second runtime = %+v", got[1])
 	}
 }

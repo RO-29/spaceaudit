@@ -34,7 +34,7 @@ func Run(o Options) model.Report {
 		steps = append(steps, "Walking the home folder", "Project build folders and worktrees", "Duplicate files")
 	}
 	if o.Events != nil {
-		o.Events(model.Event{Step: 1, Steps: len(steps), Title: steps[0]})
+		o.Events(model.Event{Step: 1, Steps: len(steps), Title: steps[0], Titles: steps})
 	}
 	o.Progress(steps[0])
 	e := newEnv(o)
@@ -53,20 +53,21 @@ func Run(o Options) model.Report {
 
 	var findings []model.Finding
 	cur := 0
+	var fb int64
 	step := func(i int, detail string) {
 		cur = i
-		var fb int64
+		fb = 0
 		for _, f := range findings {
 			fb += f.Bytes
 		}
 		o.Progress(steps[i])
 		if o.Events != nil {
-			o.Events(model.Event{Step: i + 1, Steps: len(steps), Title: steps[i], Detail: detail, Found: len(findings), FoundBytes: fb})
+			o.Events(model.Event{Step: i + 1, Steps: len(steps), Title: steps[i], Detail: detail, Found: len(findings), FoundBytes: fb, Titles: steps})
 		}
 	}
 	e.onWalk = func(files, bytes int64, where string) {
 		if o.Events != nil {
-			o.Events(model.Event{Step: cur + 1, Steps: len(steps), Title: steps[cur], Detail: where, Files: files, Bytes: bytes, Found: len(findings)})
+			o.Events(model.Event{Step: cur + 1, Steps: len(steps), Title: steps[cur], Detail: where, Files: files, Bytes: bytes, Found: len(findings), FoundBytes: fb})
 		}
 	}
 	step(1, "")
@@ -267,7 +268,7 @@ func unexplained(v model.Volume, home int64, e *Env) int64 {
 	}
 	sum := home
 	for _, p := range []string{"/Applications", "/Library", "/opt", "/usr/local", "/private/var", "/Users/Shared"} {
-		u := fsx.MeasureWithin(p, 3*time.Minute)
+		u := fsx.MeasureWithin(p, time.Minute)
 		sum += u.Bytes
 		e.fact("size "+p, fsx.Human(u.Bytes), denyNote(u))
 	}

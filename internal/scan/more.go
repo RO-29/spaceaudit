@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -284,7 +285,7 @@ func (e *Env) simRuntimes() []model.Finding {
 	var res []model.Finding
 	var name, image, lastUsed, deletable, ident string
 	flush := func() {
-		if name == "" || image == "" {
+		if ident == "" || image == "" {
 			return
 		}
 		u := fsx.MeasureWithin(image, time.Minute)
@@ -292,38 +293,30 @@ func (e *Env) simRuntimes() []model.Finding {
 			return
 		}
 		used, _ := time.Parse("2006-01-02 15:04:05 -0700", lastUsed)
+		when := "Last use is unknown."
+		if !used.IsZero() {
+			when = "Last used " + Ago(e.Now, used) + "."
+		}
 		f := model.Finding{
 			ID: id("simrt", ident), Rule: "simulator-runtime", Category: catDev, Title: "Simulator runtime " + name, Paths: []string{image},
 			Bytes: u.Bytes, Files: 1, Safety: model.Review, Confidence: "high", LastUsed: used, UsedSource: "simctl Last Used At",
-			Reasons:  []string{"Xcode keeps each simulator runtime as a disk image. Last used " + Ago(e.Now, used) + "."},
+			Reasons:  []string{"Xcode keeps each simulator runtime as a disk image. " + when},
 			Risks:    []string{"Simulators that use this runtime go away. Never delete the image file: it is under System Integrity Protection and simctl tracks it."},
 			Verify:   []string{"xcrun simctl runtime list -v"},
 			Commands: []string{"xcrun simctl runtime delete " + ident + "   # or all unused for 90 days: xcrun simctl runtime delete --notUsedSinceDays 90 --dry-run"},
 			Restore:  "Xcode > Settings > Components, or xcodebuild -downloadPlatform iOS",
 		}
-		if deletable != "YES" {
+		if deletable == "NO" {
 			f.Safety = model.Keep
 			f.Commands = []string{"simctl says this runtime is not deletable. Manage it in Xcode > Settings > Components."}
 		}
 		res = append(res, f)
 	}
-	for _, line := range strings.Split(out, "\n") {
-		t := strings.TrimSpace(line)
-		switch {
-		case strings.Contains(t, " - ") && strings.Contains(t, "(") && !strings.Contains(t, ":"):
-			flush()
-			name, image, lastUsed, deletable = t, "", "", ""
-			if i := strings.LastIndex(t, " - "); i > 0 {
-				name, ident = t[:i], strings.TrimSpace(t[i+3:])
-			}
-		case strings.HasPrefix(t, "Image Path:"):
-			image = strings.TrimSpace(strings.TrimPrefix(t, "Image Path:"))
-		case strings.HasPrefix(t, "Last Used At:"):
-			lastUsed = strings.TrimSpace(strings.TrimPrefix(t, "Last Used At:"))
-		case strings.HasPrefix(t, "Deletable:"):
-			deletable = strings.TrimSpace(strings.TrimPrefix(t, "Deletable:"))
-		}
+	for _, r := range parseSimRuntimes(out) {
+		name, ident, image, lastUsed, deletable = r.name, r.ident, r.image, r.lastUsed, r.deletable
+		flush()
 	}
+	ident = ""
 	flush()
 	return res
 }
@@ -352,4 +345,34 @@ func (e *Env) sandboxCaches(claimed []string) []model.Finding {
 		e.blockApp(&f, filepath.Dir(filepath.Dir(filepath.Dir(d))))
 		return &f
 	})
+}
+
+type simRT struct{ name, ident, image, lastUsed, deletable string }
+
+// parseSimRuntimes reads "xcrun simctl runtime list -v". Formats differ between Xcode versions, so a runtime
+// starts at any line that holds its UUID outside a "key: value" field, and its fields are the lines after it.
+func parseSimRuntimes(out string) []simRT {
+	uuid := regexp.MustCompile(`[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}`)
+	field := regexp.MustCompile(`^([A-Z][A-Za-z ]{1,30}):\s*(.*)$`)
+	var res []simRT
+	var cur *simRT
+	for _, line := range strings.Split(out, "\n") {
+		t := strings.TrimSpace(line)
+		if m := field.FindStringSubmatch(t); m != nil && cur != nil {
+			switch m[1] {
+			case "Image Path":
+				cur.image = m[2]
+			case "Last Used At":
+				cur.lastUsed = m[2]
+			case "Deletable":
+				cur.deletable = m[2]
+			}
+			continue
+		}
+		if id := uuid.FindString(t); id != "" {
+			res = append(res, simRT{name: strings.TrimSpace(strings.Split(t, " - ")[0]), ident: id})
+			cur = &res[len(res)-1]
+		}
+	}
+	return res
 }

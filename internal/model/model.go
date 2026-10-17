@@ -97,14 +97,15 @@ type Report struct {
 
 // Event is one structured progress update. Front ends use it to draw the scan screen.
 type Event struct {
-	Step       int    `json:"step"`
-	Steps      int    `json:"steps"`
-	Title      string `json:"title"`
-	Detail     string `json:"detail,omitempty"`
-	Files      int64  `json:"files,omitempty"`
-	Bytes      int64  `json:"bytes,omitempty"`
-	Found      int    `json:"found"`
-	FoundBytes int64  `json:"foundBytes"`
+	Step       int      `json:"step"`
+	Steps      int      `json:"steps"`
+	Title      string   `json:"title"`
+	Detail     string   `json:"detail,omitempty"`
+	Files      int64    `json:"files,omitempty"`
+	Bytes      int64    `json:"bytes,omitempty"`
+	Found      int      `json:"found"`
+	FoundBytes int64    `json:"foundBytes"`
+	Titles     []string `json:"titles,omitempty"` // every step, so a front end can list the steps that are still to come
 }
 
 // RecheckItem is one earlier finding measured again.

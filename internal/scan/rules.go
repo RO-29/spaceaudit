@@ -79,7 +79,7 @@ func (e *Env) annotate(f *model.Finding, u fsx.Usage) {
 	}
 	if u.TimedOut {
 		f.Partial = true
-		f.Notes = append(f.Notes, "Measuring stopped after 2 minutes because macOS held a folder (a privacy prompt or a cloud folder). The real size can be larger.")
+		f.Notes = append(f.Notes, "Measuring stopped because a folder gave no answer for one minute (a privacy prompt or a cloud folder). The real size can be larger.")
 	}
 	if u.Denied > 0 {
 		f.Partial = true
@@ -172,7 +172,7 @@ func (e *Env) staticRules() ([]model.Finding, []string) {
 	return out, claimed
 }
 
-const measureLimit = 2 * time.Minute
+const measureLimit = time.Minute // stall limit, not a total limit
 
 func measureAll(paths []string) fsx.Usage {
 	var t fsx.Usage

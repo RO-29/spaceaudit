@@ -246,7 +246,7 @@ func (e *Env) walkHome() walkResult {
 
 // addTree measures a pruned folder into the totals and stops the walk from entering it.
 func (e *Env) addTree(r *walkResult, p string) error {
-	u := fsx.MeasureWithin(p, 3*time.Minute)
+	u := fsx.MeasureWithin(p, time.Minute)
 	e.sizes.Store(p, u)
 	r.total += u.Bytes
 	r.top[second(e.Home, p)] += u.Bytes

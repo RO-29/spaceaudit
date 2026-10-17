@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -47,24 +48,33 @@ func Provider(p, home string) bool {
 // Home is the folder that Provider checks against. The scanner sets it once.
 var Home string
 
-// MeasureWithin is Measure with a time limit. The walk stops at the deadline and keeps what it counted.
-// A syscall that blocks for good (a privacy prompt) is abandoned by the outer timer.
-func MeasureWithin(root string, limit time.Duration) Usage {
+// MeasureWithin is Measure that gives up only when the walk stalls: no new entry for the stall time.
+// A big folder takes as long as it needs; a syscall that blocks for good (a privacy prompt) is abandoned.
+func MeasureWithin(root string, stall time.Duration) Usage {
 	done := make(chan Usage, 1)
-	deadline := time.Now().Add(limit)
-	go func() { done <- measure(root, deadline) }()
-	select {
-	case u := <-done:
-		return u
-	case <-time.After(limit + 5*time.Second):
-		return Usage{Exists: true, TimedOut: true}
+	var seen, bytes atomic.Int64
+	go func() { done <- measure(root, &seen, &bytes) }()
+	last, lastAt := int64(-1), time.Now()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case u := <-done:
+			return u
+		case <-tick.C:
+			if n := seen.Load(); n != last {
+				last, lastAt = n, time.Now()
+			} else if time.Since(lastAt) > stall {
+				return Usage{Exists: true, TimedOut: true, Bytes: bytes.Load(), Freeable: bytes.Load()}
+			}
+		}
 	}
 }
 
 // Measure walks root on one device. Hard links are counted once.
-func Measure(root string) Usage { return measure(root, time.Time{}) }
+func Measure(root string) Usage { return measure(root, nil, nil) }
 
-func measure(root string, deadline time.Time) Usage {
+func measure(root string, seenN, bytesN *atomic.Int64) Usage {
 	var u Usage
 	st, err := os.Lstat(root)
 	if err != nil {
@@ -85,9 +95,8 @@ func measure(root string, deadline time.Time) Usage {
 	}
 	seen := map[uint64]bool{}
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if !deadline.IsZero() && u.Files%512 == 0 && time.Now().After(deadline) {
-			u.TimedOut = true
-			return fs.SkipAll
+		if seenN != nil {
+			seenN.Add(1)
 		}
 		if err != nil {
 			if errors.Is(err, fs.ErrPermission) {
@@ -109,7 +118,11 @@ func measure(root string, deadline time.Time) Usage {
 		if d.IsDir() && (sys.Dev != rootSys.Dev || (Home != "" && p != root && Provider(p, Home))) {
 			return fs.SkipDir
 		}
+		before := u.Bytes
 		add(&u, p, info, sys, seen)
+		if bytesN != nil {
+			bytesN.Add(u.Bytes - before)
+		}
 		return nil
 	})
 	return u
