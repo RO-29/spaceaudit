@@ -140,7 +140,7 @@ func TestRefusedTargets(t *testing.T) {
 			t.Errorf("del(%q) gave a command: %s", p, c)
 		}
 	}
-	for _, p := range []string{filepath.Join(home, "Library", "Caches", "com.x"), filepath.Join(home, "proj", "node_modules"), filepath.Join(home, ".konan"), "/Applications/Xcode.app", "/Library/Developer/CoreSimulator/Caches"} {
+	for _, p := range []string{filepath.Join(home, "Library", "Caches", "com.x"), filepath.Join(home, "proj", "node_modules"), filepath.Join(home, ".konan"), "/Applications/NoSuchApp.app", "/Library/Developer/CoreSimulator/Caches"} {
 		if err := e.refuse(p); err != nil {
 			t.Errorf("refuse(%q) = %v, want allowed", p, err)
 		}
