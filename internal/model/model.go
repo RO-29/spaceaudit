@@ -79,21 +79,24 @@ type Fact struct {
 
 // Report is the full scan output.
 type Report struct {
-	Tool        string      `json:"tool"`
-	Version     string      `json:"version"`
-	GeneratedAt time.Time   `json:"generatedAt"`
-	Host        string      `json:"host"`
-	MacOS       string      `json:"macos"`
-	Home        string      `json:"home"`
-	DurationSec float64     `json:"durationSec"`
-	Volume      Volume      `json:"volume"`
-	Areas       []Area      `json:"areas"`
-	Unexplained int64       `json:"unexplained"`
-	Facts       []Fact      `json:"facts"`
-	Totals      Totals      `json:"totals"`
-	Findings    []Finding   `json:"findings"`
-	Inventories []Inventory `json:"inventories,omitempty"`
-	Warnings    []string    `json:"warnings"`
+	Tool        string         `json:"tool"`
+	Version     string         `json:"version"`
+	GeneratedAt time.Time      `json:"generatedAt"`
+	Host        string         `json:"host"`
+	MacOS       string         `json:"macos"`
+	Home        string         `json:"home"`
+	DurationSec float64        `json:"durationSec"`
+	Volume      Volume         `json:"volume"`
+	Areas       []Area         `json:"areas"`
+	Unexplained int64          `json:"unexplained"`
+	Facts       []Fact         `json:"facts"`
+	Totals      Totals         `json:"totals"`
+	Findings    []Finding      `json:"findings"`
+	Inventories []Inventory    `json:"inventories,omitempty"`
+	Run         int            `json:"run,omitempty"`   // this report's number in the history
+	Every       string         `json:"every,omitempty"` // the schedule, when a scheduled job made this report
+	History     []HistoryPoint `json:"history,omitempty"`
+	Warnings    []string       `json:"warnings"`
 }
 
 // Part is one measured folder inside an inventory item, with what it holds.
@@ -177,6 +180,21 @@ type RecheckReport struct {
 	VolumeNow    Volume        `json:"volumeNow"`
 	Freed        int64         `json:"freed"`
 	Items        []RecheckItem `json:"items"`
+}
+
+// HistoryPoint is the summary of one full scan, kept so a report can show the trend.
+type HistoryPoint struct {
+	Run       int       `json:"run"`
+	At        time.Time `json:"at"`
+	Version   string    `json:"version"`
+	Total     int64     `json:"total"`
+	Used      int64     `json:"used"`
+	Available int64     `json:"available"`
+	Safe      int64     `json:"safe"`
+	Review    int64     `json:"review"`
+	Risky     int64     `json:"risky"`
+	Findings  int       `json:"findings"`
+	Seconds   float64   `json:"seconds"`
 }
 
 // Totals sums findings per safety level without double counting nested paths.

@@ -82,6 +82,19 @@ The inventory is a map, not advice. Each part says what it holds and how safe it
 - **Programming languages:** JavaScript and TypeScript, Python, Go, Rust, Java/Kotlin/Scala, Swift and Apple platforms, Ruby, PHP, Dart and Flutter, .NET, Haskell, Julia, Elixir, C and C++: project dependency and build folders (with the largest projects), caches, toolchains and installed versions.
 - **Downloads:** grouped into installers, archives, videos, audio, images, documents, code and data, folders and other, each with age groups and the largest items.
 
+## Scheduled scans
+
+```sh
+scripts/schedule.sh install 6        # a read-only full scan every 6 hours
+scripts/schedule.sh status
+scripts/schedule.sh run-now
+scripts/schedule.sh remove
+```
+
+The job is a launchd agent (`~/Library/LaunchAgents/io.github.ro-29.spaceaudit.scan.plist`) that runs at background priority. It replaces one report, `~/spaceaudit-reports/spaceaudit-latest.html` by default, with a new version each time. The report shows its version number, when it was updated and when the next update is due. A History section charts free space and the safe, review and risky totals of every version, with the change between runs. The history lives in `~/Library/Application Support/spaceaudit/history.jsonl`. The log is `~/Library/Logs/SpaceAudit/scheduled.log`.
+
+A scheduled job runs without the Full Disk Access of your terminal. macOS can hide Mail, Messages and Safari data from it, and the report marks those findings "partial". To include them, add the `spaceaudit` binary inside SpaceAudit.app to Full Disk Access.
+
 ## Recheck
 
 Every full scan is kept in `~/Library/Application Support/spaceaudit/last-scan.json`. After you clean up, `spaceaudit recheck` (or the Recheck button in the app) measures only those items again and says for each one: gone, partly gone, smaller, unchanged or larger, plus the free space then and now. It compares the same measure and the same age filter as the scan. An item that could not be measured fully says "not checked", never "smaller". `-i report.json` or `-i report.html` compares with an older report.

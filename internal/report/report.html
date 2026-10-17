@@ -129,6 +129,12 @@ kbd{font:11px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-b
 </header>
 <div class="notice"><b>This report only recommends.</b> spaceaudit deleted nothing. Check each path and run each verify command yourself before you run a cleanup command. Keep a backup of anything you cannot download again.</div>
 
+<div class="card" id="histcard" style="display:none;margin-bottom:14px">
+  <h2>History <span class="sub" id="histsub"></span></h2>
+  <div id="histchart"></div>
+  <table class="facts" id="histtable" style="width:100%;margin-top:10px"></table>
+</div>
+
 <div class="card"><h2>Disk</h2><div class="bar" id="diskbar"></div><div class="legend" id="disklegend"></div></div>
 <div class="grid kpis" id="kpis"></div>
 
@@ -191,7 +197,20 @@ const home=R.home||'';const pretty=p=>p&&home&&p.startsWith(home+'/')?'~/'+p.sli
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const ago=t=>{if(!t)return'';const d=(Date.now()-new Date(t))/864e5;return d<1?'today':d<2?'yesterday':Math.round(d)+' days ago'};
 
-$('#sub').textContent=`${R.host} · macOS ${R.macos} · ${new Date(R.generatedAt).toLocaleString()} · scan took ${Math.round(R.durationSec)}s · spaceaudit ${R.version}`;
+$('#sub').innerHTML=(R.run?`<b>Version ${R.run}</b> · `:'')+esc(`${R.host} · macOS ${R.macos} · updated ${new Date(R.generatedAt).toLocaleString()} · scan took ${Math.round(R.durationSec)}s · spaceaudit ${R.version}`)+(R.every?esc(` · updates every ${R.every}, next about ${new Date(new Date(R.generatedAt).getTime()+({'6h':6,'12h':12,'24h':24,'1h':1}[R.every]||6)*36e5).toLocaleString()}`):'');
+
+// History: one point per full scan, so the trend of free space and of what can be freed is visible.
+(function(){const h=(R.history||[]).filter(p=>p.total>0);if(h.length<1)return;$('#histcard').style.display='';
+  $('#histsub').textContent=`${h.length} versions since ${new Date(h[0].at).toLocaleString()}`;
+  const W=1100,Hh=220,P=36,max=Math.max(...h.map(p=>Math.max(p.available,p.safe+p.review+p.risky)))*1.1||1;
+  const x=i=>P+(h.length===1?(W-2*P)/2:i*(W-2*P)/(h.length-1)),y=v=>Hh-P-(v/max)*(Hh-2*P);
+  const line=(f,c,lab)=>`<polyline fill="none" stroke="${c}" stroke-width="2.5" points="${h.map((p,i)=>x(i)+','+y(f(p))).join(' ')}"/>`+h.map((p,i)=>`<circle cx="${x(i)}" cy="${y(f(p))}" r="3.5" fill="${c}"><title>${lab} ${H(f(p))} · version ${p.run} · ${new Date(p.at).toLocaleString()}</title></circle>`).join('');
+  const grid=[0,.25,.5,.75,1].map(t=>`<line x1="${P}" x2="${W-P}" y1="${y(max*t/1.1)}" y2="${y(max*t/1.1)}" stroke="var(--line)"/><text x="4" y="${y(max*t/1.1)+4}" font-size="11" fill="var(--ink3)">${H(max*t/1.1)}</text>`).join('');
+  $('#histchart').innerHTML=`<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto">${grid}${line(p=>p.available,'var(--ink2)','Free')}${line(p=>p.safe,'var(--safe)','Safe')}${line(p=>p.review,'var(--review)','Review')}${line(p=>p.risky,'var(--risky)','Risky')}</svg>
+    <div class="legend"><span><i style="background:var(--ink2)"></i>Free space</span><span><i style="background:var(--safe)"></i>Safe to free</span><span><i style="background:var(--review)"></i>After review</span><span><i style="background:var(--risky)"></i>Risky</span></div>`;
+  const d=(a,b)=>{const v=a-b;return v===0?'':`<span style="color:${v>0?'var(--safe)':'var(--risky)'}">${v>0?'+':'−'}${H(Math.abs(v))}</span>`};
+  $('#histtable').innerHTML='<tr><td>Version</td><td>Time</td><td>Free</td><td>Change</td><td>Safe</td><td>Review</td><td>Risky</td><td>Findings</td></tr>'+h.slice().reverse().slice(0,12).map((p,i,a)=>`<tr><td><b>${p.run}</b></td><td>${new Date(p.at).toLocaleString()}</td><td>${H(p.available)}</td><td>${a[i+1]?d(p.available,a[i+1].available):''}</td><td>${H(p.safe)}</td><td>${H(p.review)}</td><td>${H(p.risky)}</td><td>${p.findings}</td></tr>`).join('');
+})();
 
 const V=R.volume,T=R.totals;
 function disk(){

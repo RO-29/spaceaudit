@@ -123,10 +123,17 @@ func main() {
 		fmt.Fprint(os.Stderr, "\r\033[K")
 	}
 	if !*quick {
+		if run, err := state.AppendHistory(r); err == nil {
+			r.Run = run
+		} else {
+			fmt.Fprintln(os.Stderr, "spaceaudit: could not add the scan to the history:", err)
+		}
 		if err := state.Save(r); err != nil {
 			fmt.Fprintln(os.Stderr, "spaceaudit: could not save the scan for recheck:", err)
 		}
 	}
+	r.History = state.LoadHistory(120)
+	r.Every = os.Getenv("SPACEAUDIT_EVERY") // set by the scheduled job
 	if *levels == "" && cmd == "plan" {
 		*levels = "safe"
 	}
