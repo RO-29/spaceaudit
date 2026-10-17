@@ -332,6 +332,12 @@ struct ContentView: View {
                     Text("\(selection.count) items · \(human(chosen.reduce(0) { $0 + $1.bytes }))").font(.title3.bold())
                     Text("Use the plan bar to copy or save a plan. A plan runs only the verify commands.").foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.padding()
+            } else if level.hasPrefix("inv:") {
+                VStack(spacing: 10) {
+                    Image(systemName: "list.bullet.indent").font(.system(size: 44)).foregroundStyle(.secondary)
+                    Text("Open an item to see its folders").font(.title3)
+                    Text("Each part says what it holds and how safe it is to clear. The commands are in the recommendations (Level in the sidebar).").foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }.padding()
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "internaldrive").font(.system(size: 44)).foregroundStyle(.secondary)
@@ -373,7 +379,9 @@ struct ContentView: View {
             Button("OK") {}
         } message: { Text(scanner.error ?? "") }
         .onAppear {
-            if scanner.report == nil { scanner.scan(quick: !CommandLine.arguments.contains("--autoscan-full")) }
+            let args = CommandLine.arguments
+            if let i = args.firstIndex(of: "--show"), i + 1 < args.count { level = args[i + 1] }
+            if scanner.report == nil { scanner.scan(quick: !args.contains("--autoscan-full")) }
         }
     }
 

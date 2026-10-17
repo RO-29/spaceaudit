@@ -427,7 +427,13 @@ func (e *Env) aiInventory() model.Inventory {
 		}
 		sortParts(parts)
 		it := model.InvItem{Name: t.name, Kind: t.kind, Parts: parts, Bytes: sumParts(parts), Path: filepath.Join(e.Home, t.roots[0])}
-		if len(t.proc) > 0 && e.AppRunning(t.proc...) != "" {
+		inUse := false
+		for _, r := range t.roots {
+			if len(e.UsersOf(filepath.Join(e.Home, r))) > 0 {
+				inUse = true // a process holds a file open here, even when its name is a version number
+			}
+		}
+		if inUse || (len(t.proc) > 0 && e.AppRunning(t.proc...) != "") {
 			it.Running = true
 			it.Notes = append(it.Notes, "It runs now. Do not touch its folders while it runs.")
 		}
