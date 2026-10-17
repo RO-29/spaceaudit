@@ -1,5 +1,5 @@
 name: verify-os
-on: [push, workflow_dispatch]
+on: [workflow_dispatch]   # macOS runners use 10x minutes on a private repo, so this runs on demand
 jobs:
   verify:
     strategy:
