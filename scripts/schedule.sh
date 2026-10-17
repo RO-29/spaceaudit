@@ -42,6 +42,7 @@ install)
 EOF
   plutil -lint "$PLIST" >/dev/null
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+  i=0; while launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1 && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
   launchctl bootstrap "$DOMAIN" "$PLIST"
   echo "Scheduled: a read-only full scan every $HOURS hours."
   echo "Report:    $OUT (the same file, one new version per run)"

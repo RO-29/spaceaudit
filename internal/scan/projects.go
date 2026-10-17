@@ -136,6 +136,10 @@ func (e *Env) walkHome() walkResult {
 	}()
 	for _, en := range ents {
 		p := filepath.Join(e.Home, en.Name())
+		if why := fsx.Blocked(p); why != "" {
+			e.skip(p, why)
+			continue
+		}
 		if !en.IsDir() {
 			if info, err := en.Info(); err == nil {
 				if sys, ok := info.Sys().(*syscall.Stat_t); ok {
@@ -168,7 +172,11 @@ func (e *Env) walkHome() walkResult {
 				}
 				name := d.Name()
 				if d.IsDir() && p != top {
-					if devOf(p) != rootDev || fsx.Provider(p, e.Home) {
+					if devOf(p) != rootDev {
+						return fs.SkipDir
+					}
+					if why := fsx.Blocked(p); why != "" {
+						e.skip(p, why)
 						return fs.SkipDir
 					}
 					if name == ".git" {

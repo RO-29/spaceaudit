@@ -106,7 +106,7 @@ func orNone(s string) string {
 
 // sandboxWebCaches covers Chromium caches inside sandboxed app containers, such as new Teams.
 func (e *Env) sandboxWebCaches(claimed []string) []model.Finding {
-	conts, _ := filepath.Glob(filepath.Join(e.Home, "Library/Containers/*/Data/Library"))
+	conts := fsx.Glob(filepath.Join(e.Home, "Library/Containers/*/Data/Library"), e.Home)
 	var out []model.Finding
 	for _, lib := range conts {
 		var paths []string
@@ -323,7 +323,7 @@ func (e *Env) simRuntimes() []model.Finding {
 
 // sandboxCaches covers ~/Library/Containers/<app>/Data/Library/Caches, which the generic rule does not see.
 func (e *Env) sandboxCaches(claimed []string) []model.Finding {
-	dirs, _ := filepath.Glob(filepath.Join(e.Home, "Library/Containers/*/Data/Library/Caches"))
+	dirs := fsx.Glob(filepath.Join(e.Home, "Library/Containers/*/Data/Library/Caches"), e.Home)
 	return parallel(e.Opt.Jobs, len(dirs), func(i int) *model.Finding {
 		d := dirs[i]
 		if isClaimed(d, claimed) {

@@ -135,6 +135,9 @@ func BlindSpots(r model.Report) []string {
 		g = append(g, "Quick scan: project folders, worktrees, duplicates and large files were not checked.")
 	}
 	for _, f := range r.Facts {
+		if f.Key == "full disk access" && f.Value == "no" {
+			g = append([]string{"No Full Disk Access: Desktop, Documents, Downloads and other apps' data were skipped to avoid macOS prompts. " + f.Note}, g...)
+		}
 		if f.Key == "not opened" {
 			g = append(g, f.Value+" was not opened: reading cloud folders can download files. Use Optimize Mac Storage or the cloud app.")
 		}

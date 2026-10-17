@@ -19,6 +19,12 @@ lipo -create -output "$APP/Contents/MacOS/SpaceAudit" dist/tmp/SpaceAudit-arm64 
 cp dist/spaceaudit "$APP/Contents/Resources/spaceaudit"
 sed "s/__VERSION__/$VERSION/g" macapp/Info.plist > "$APP/Contents/Info.plist"
 sh scripts/make-icon.sh "$APP/Contents/Resources/AppIcon.icns" || echo "icon skipped"
-codesign --force --deep --sign - "$APP"
+# A stable identity keeps privacy grants (Full Disk Access) across rebuilds; ad-hoc signing changes every build.
+SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+SIGN_ID="${SIGN_ID:--}"
+codesign --force --sign "$SIGN_ID" --identifier io.github.ro-29.spaceaudit.cli "$APP/Contents/Resources/spaceaudit"
+codesign --force --sign "$SIGN_ID" --identifier io.github.ro-29.spaceaudit.cli dist/spaceaudit
+codesign --force --sign "$SIGN_ID" "$APP"
+echo "Signed with: $SIGN_ID"
 rm -rf dist/tmp
 echo "Built $APP and dist/spaceaudit ($VERSION)"

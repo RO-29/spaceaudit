@@ -28,22 +28,25 @@ type Options struct {
 	Jobs       int
 	Progress   func(string)
 	Events     func(model.Event)
+	AskAccess  bool // let macOS show privacy prompts instead of skipping protected folders
 }
 
 // Env is the shared, read-only state for every rule.
 type Env struct {
-	Opt    Options
-	Home   string
-	Now    time.Time
-	open   []openFile // sorted by path
-	procs  map[int]string
-	gitMu  sync.Mutex
-	git    map[string]*repoInfo
-	Facts  []model.Fact
-	Warn   []string
-	sizes  sync.Map // path -> fsx.Usage measured during the home walk
-	onWalk func(files, bytes int64, where string)
-	warnMu sync.Mutex
+	Opt     Options
+	Home    string
+	Now     time.Time
+	open    []openFile // sorted by path
+	procs   map[int]string
+	gitMu   sync.Mutex
+	git     map[string]*repoInfo
+	Facts   []model.Fact
+	Warn    []string
+	sizes   sync.Map // path -> fsx.Usage measured during the home walk
+	onWalk  func(files, bytes int64, where string)
+	skipMu  sync.Mutex
+	skipped map[string]string // protected folders that were not opened, with the reason
+	warnMu  sync.Mutex
 }
 
 type openFile struct {
@@ -62,6 +65,16 @@ func newEnv(o Options) *Env {
 	e := &Env{Opt: o, Home: o.Home, Now: time.Now(), procs: map[int]string{}, git: map[string]*repoInfo{}}
 	e.loadOpenFiles()
 	return e
+}
+
+// skip records a folder that the scan did not open.
+func (e *Env) skip(p, why string) {
+	e.skipMu.Lock()
+	if e.skipped == nil {
+		e.skipped = map[string]string{}
+	}
+	e.skipped[p] = why
+	e.skipMu.Unlock()
 }
 
 func (e *Env) warn(s string) {

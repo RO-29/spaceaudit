@@ -30,9 +30,17 @@ struct Finding: Codable, Identifiable, Hashable {
 }
 
 struct Part: Codable, Hashable { let name: String; let path: String?; let bytes: Int64; let explain: String?; let safety: String?; let partial: Bool?; let top: [String]? }
-struct InvGroup: Codable, Hashable { let name: String; let note: String?; let bytes: Int64; let parts: [Part] }
+struct InvGroup: Codable, Hashable {
+    let name: String; let note: String?; let bytes: Int64; let partsOrNil: [Part]?
+    var parts: [Part] { partsOrNil ?? [] }
+    enum CodingKeys: String, CodingKey { case name, note, bytes, partsOrNil = "parts" }
+}
 struct InvItem: Codable, Hashable, Identifiable { var id: String { name }; let name: String; let kind: String?; let installed: Bool?; let running: Bool?; let appBytes: Int64?; let bytes: Int64; let groups: [InvGroup]?; let parts: [Part]?; let notes: [String]? }
-struct Inventory: Codable, Hashable { let key: String; let title: String; let intro: String; let bytes: Int64; let items: [InvItem] }
+struct Inventory: Codable, Hashable {
+    let key: String; let title: String; let intro: String; let bytes: Int64; let itemsOrNil: [InvItem]?
+    var items: [InvItem] { itemsOrNil ?? [] }
+    enum CodingKeys: String, CodingKey { case key, title, intro, bytes, itemsOrNil = "items" }
+}
 
 struct Volume: Codable { let mount: String; let total: Int64; let used: Int64; let available: Int64 }
 struct Totals: Codable { let safe: Int64; let review: Int64; let risky: Int64; let keep: Int64 }
@@ -254,6 +262,7 @@ struct ContentView: View {
     }
     var chosen: [Finding] { (scanner.report?.findings ?? []).filter { selection.contains($0.id) } }
     var partialCount: Int { (scanner.report?.findings ?? []).filter { $0.partial == true }.count }
+    var noFullDisk: Bool { scanner.report?.facts?.first(where: { $0.key == "full disk access" })?.value == "no" }
 
     var body: some View {
         NavigationSplitView {
@@ -296,7 +305,20 @@ struct ContentView: View {
             } else {
             VStack(spacing: 0) {
                 header
-                if partialCount > 0 {
+                if noFullDisk {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "hand.raised.fill").foregroundStyle(.blue)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Desktop, Documents, Downloads and other apps' data were not scanned").font(.callout.bold())
+                            Text("SpaceAudit skips them so that macOS does not ask you for permission on every scan. To include them, add SpaceAudit (and, for scheduled scans, its scanner) to Full Disk Access once. The grant stays across updates.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 6) {
+                            Button("Open Full Disk Access") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!) }
+                            Button("Show scanner in Finder") { NSWorkspace.shared.activateFileViewerSelecting([scanner.cli]) }.font(.caption)
+                        }
+                    }.padding(10).background(Color.blue.opacity(0.10)).padding(.horizontal, 12).padding(.bottom, 8)
+                } else if partialCount > 0 {
                     HStack {
                         Image(systemName: "lock.shield").foregroundStyle(.orange)
                         Text("macOS hid some folders from \(partialCount) findings, so their sizes are too small. Give SpaceAudit Full Disk Access, then scan again.").font(.callout)

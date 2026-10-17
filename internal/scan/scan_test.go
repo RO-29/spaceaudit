@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -351,5 +352,51 @@ iOS 18.2 (22C150) - 1F6E2A30-3C1B-4B4E-9E2A-7A1B2C3D4E5F (Ready)
 	}
 	if got[1].name != "iOS 18.2 (22C150)" || got[1].deletable != "NO" || !strings.HasSuffix(got[1].image, ".dmg") {
 		t.Errorf("second runtime = %+v", got[1])
+	}
+}
+
+func TestNoPromptNeverOpensProtectedFolders(t *testing.T) {
+	e, home := testEnv(t)
+	fsx.Home, fsx.NoPrompt = home, true
+	defer func() { fsx.Home, fsx.NoPrompt = "", false }()
+	for _, p := range []string{"Desktop/a.bin", "Documents/b.bin", "Downloads/c.dmg", "Library/Containers/com.x/Data/Library/Caches/d", "Library/Group Containers/g.y/e", "code/proj/f.bin"} {
+		write(t, filepath.Join(home, p), 1<<20)
+	}
+	if u := fsx.Measure(filepath.Join(home, "Desktop")); !u.Skipped || u.Bytes != 0 {
+		t.Errorf("Desktop was read: %+v", u)
+	}
+	if m := fsx.Glob("~/Library/Containers/*/Data/Library/Caches", home); len(m) != 0 {
+		t.Errorf("a glob reached into other apps' containers: %v", m)
+	}
+	if fsx.Exists(filepath.Join(home, "Documents/b.bin")) {
+		t.Error("Exists looked inside Documents")
+	}
+	w := e.walkHome()
+	if w.total == 0 || w.total >= 3<<20 {
+		t.Errorf("home walk total = %d: it must count code/ (1 MB + dirs) and skip the protected folders", w.total)
+	}
+	for _, want := range []string{"Desktop", "Documents", "Downloads"} {
+		if e.skipped[filepath.Join(home, want)] != "privacy" {
+			t.Errorf("%s was not recorded as skipped: %v", want, e.skipped)
+		}
+	}
+	if len(e.downloads()) != 0 || e.downloadsInventory().Items != nil {
+		t.Error("Downloads was read in no-prompt mode")
+	}
+	fsx.NoPrompt = false
+	if u := fsx.Measure(filepath.Join(home, "Desktop")); u.Skipped || u.Bytes == 0 {
+		t.Error("with access allowed, Desktop must be measured")
+	}
+}
+
+// The Mac app decodes lists strictly, so an empty inventory must be written as [] and never as null.
+func TestEmptyInventoryIsAList(t *testing.T) {
+	_, home := testEnv(t)
+	fsx.Home, fsx.NoPrompt = home, true
+	defer func() { fsx.Home, fsx.NoPrompt = "", false }()
+	r := Run(Options{Home: home, Quick: true, NoDocker: true, Jobs: 2, MinBytes: 1 << 20})
+	b, _ := json.Marshal(r)
+	if strings.Contains(string(b), `"items":null`) || strings.Contains(string(b), `"parts":null`) {
+		t.Fatal("the report has a null list")
 	}
 }

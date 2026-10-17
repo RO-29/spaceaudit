@@ -315,6 +315,7 @@ const partial=R.findings.filter(f=>f.partial).length;const gaps=[];
 if(partial)gaps.push(`${partial} findings have folders that macOS did not let the scan read. Give Full Disk Access to the terminal or the app, then scan again.`);
 if(R.unexplained)gaps.push(`${H(R.unexplained)} of used space is outside what the scan can read: root-only folders, other users, snapshots and purgeable space.`);
 if(!(R.areas||[]).length)gaps.push('This was a quick scan: project folders, worktrees, duplicates and large files were not checked.');
+(R.facts||[]).filter(f=>f.key==='full disk access'&&f.value==='no').forEach(f=>gaps.unshift('No Full Disk Access: Desktop, Documents, Downloads and other apps\' data were skipped, so that macOS does not ask for permission. '+f.note));
 (R.facts||[]).filter(f=>f.key==='not opened').forEach(f=>gaps.push(`${f.value} was not opened, because reading cloud folders can download files. Use Optimize Mac Storage or the cloud app.`));
 gaps.push('APFS clones share disk blocks, so deleting a clone can free less than its size.');
 gaps.push('"Last used" comes from Spotlight or from app data folders. It is a signal, not proof.');

@@ -57,6 +57,10 @@ func Recheck(base model.Report, ids map[string]bool) model.RecheckReport {
 		var now int64
 		stalled := false
 		for _, p := range f.Paths {
+			if fsx.Blocked(p) != "" {
+				stalled = true // not readable without a prompt now
+				continue
+			}
 			if _, err := os.Lstat(p); err != nil {
 				gone++
 				continue

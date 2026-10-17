@@ -61,6 +61,7 @@ func main() {
 	noDocker := fs.Bool("no-docker", false, "do not ask the Docker daemon")
 	jobs := fs.Int("jobs", 8, "parallel workers")
 	noOpen := fs.Bool("no-open", false, "do not open the HTML report after writing it")
+	askAccess := fs.Bool("ask-access", false, "without Full Disk Access, let macOS ask for Desktop, Documents, Downloads and app data (default: skip them silently)")
 	levels := fs.String("level", "", "only these levels, comma separated: safe,review,risky,keep (plan defaults to safe)")
 	fs.StringVar(&home, "home", home, "home folder to scan")
 	input := fs.String("i", "", "recheck: the report to compare against (default: the last scan)")
@@ -87,12 +88,16 @@ func main() {
 	}
 	tty := isatty.IsTerminal(os.Stderr.Fd())
 	o := scan.Options{Home: home, MinBytes: int64(*minMB) << 20, LargeBytes: int64(*largeGB * (1 << 30)),
-		ActiveFor: *active, StaleAfter: time.Duration(*stale) * 24 * time.Hour, Quick: *quick, NoDocker: *noDocker, Jobs: *jobs}
+		ActiveFor: *active, StaleAfter: time.Duration(*stale) * 24 * time.Hour, Quick: *quick, NoDocker: *noDocker, Jobs: *jobs, AskAccess: *askAccess}
+	scheduled := os.Getenv("SPACEAUDIT_EVERY") != ""
 	o.Progress = func(s string) {
-		if tty {
+		switch {
+		case tty:
 			fmt.Fprintf(os.Stderr, "\r\033[K• %s", s)
-		} else if cmd == "json" {
+		case cmd == "json":
 			fmt.Fprintln(os.Stderr, "progress: "+s)
+		case scheduled && !strings.HasPrefix(s, "Walking the home folder:"):
+			fmt.Fprintln(os.Stderr, time.Now().Format(time.RFC3339)+" "+s) // the scheduled log shows each step
 		}
 	}
 	if cmd == "json" && !tty {

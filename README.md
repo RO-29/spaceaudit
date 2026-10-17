@@ -93,6 +93,17 @@ scripts/schedule.sh remove
 
 The job is a launchd agent (`~/Library/LaunchAgents/io.github.ro-29.spaceaudit.scan.plist`) that runs at background priority. It replaces one report, `~/spaceaudit-reports/spaceaudit-latest.html` by default, with a new version each time. The report shows its version number, when it was updated and when the next update is due. A History section charts free space and the safe, review and risky totals of every version, with the change between runs. The history lives in `~/Library/Application Support/spaceaudit/history.jsonl`. The log is `~/Library/Logs/SpaceAudit/scheduled.log`.
 
+### Privacy prompts
+
+macOS, not spaceaudit, shows the "would like to access" dialogs. They come from Desktop, Documents, Downloads and other apps' data (`~/Library/Containers`, `Group Containers`).
+
+- spaceaudit checks at start whether it has Full Disk Access. The check reads a file that only Full Disk Access allows, and a failed read never shows a dialog.
+- With Full Disk Access it scans everything and macOS never asks.
+- Without it, spaceaudit does not open those folders at all, so no dialog appears. The report lists what it skipped. `--ask-access` lets macOS ask instead.
+- The app and the scanner are signed with a stable identity (your Apple Development certificate when one exists), so a Full Disk Access grant stays across updates. Ad-hoc signing (`codesign -s -`) changes with every build, and macOS then treats each build as a new program.
+
+To grant it once: System Settings > Privacy & Security > Full Disk Access, add SpaceAudit.app, and for scheduled scans also `/Applications/SpaceAudit.app/Contents/Resources/spaceaudit` (the app's "Show scanner in Finder" button opens it).
+
 A scheduled job runs without the Full Disk Access of your terminal. macOS can hide Mail, Messages and Safari data from it, and the report marks those findings "partial". To include them, add the `spaceaudit` binary inside SpaceAudit.app to Full Disk Access.
 
 ## Recheck

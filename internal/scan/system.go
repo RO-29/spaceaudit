@@ -147,6 +147,9 @@ func (e *Env) appDataTime(app, name string) time.Time {
 	}
 	cands = append(cands, filepath.Join(e.Home, "Library/Application Support", name))
 	for _, c := range cands {
+		if fsx.Blocked(c) != "" {
+			continue // another app's container: reading it can show a privacy prompt
+		}
 		if st, err := os.Stat(c); err == nil && st.ModTime().After(newest) && st.ModTime().Before(e.Now.Add(time.Hour)) {
 			newest = st.ModTime()
 		}
@@ -161,6 +164,10 @@ func writable(st os.FileInfo) bool {
 // downloads reports large files in Downloads, with age, origin and whether an installer is already installed.
 func (e *Env) downloads() []model.Finding {
 	dir := filepath.Join(e.Home, "Downloads")
+	if why := fsx.Blocked(dir); why != "" {
+		e.skip(dir, why)
+		return nil
+	}
 	var files []string
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {

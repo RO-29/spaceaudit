@@ -29,6 +29,8 @@ func Run(o Options) model.Report {
 		o.Progress = func(string) {}
 	}
 	fsx.Home = o.Home
+	fda := fsx.FullDiskAccess()
+	fsx.NoPrompt = !fda && !o.AskAccess
 	steps := []string{"Snapshot of open files (lsof)", "Known caches and tool folders", "App and browser caches", "Homebrew and Docker (dry run)", "Snapshots, open deleted files, simulators", "Applications and Downloads"}
 	if !o.Quick {
 		steps = append(steps, "Walking the home folder", "Project build folders and worktrees", "Duplicate files")
@@ -39,6 +41,13 @@ func Run(o Options) model.Report {
 	}
 	o.Progress(steps[0])
 	e := newEnv(o)
+	if fda {
+		e.fact("full disk access", "yes", "The scan reads every folder without privacy prompts.")
+	} else if o.AskAccess {
+		e.fact("full disk access", "no, prompts allowed", "macOS can ask for access to Desktop, Documents, Downloads and other apps' data during this scan.")
+	} else {
+		e.fact("full disk access", "no", "To avoid macOS prompts, the scan did not open Desktop, Documents, Downloads or other apps' data. Give Full Disk Access to "+exePath()+" (or SpaceAudit.app) once to include them, or run with --ask-access.")
+	}
 	for _, r := range []string{"Library/Mobile Documents", "Library/CloudStorage"} {
 		if fsx.Exists(filepath.Join(o.Home, r)) {
 			e.fact("not opened", "~/"+r, "Cloud folders (iCloud Drive, Google Drive, Dropbox, OneDrive) are not read, because reading them can download files. Manage them in their apps.")
@@ -115,6 +124,18 @@ func Run(o Options) model.Report {
 	}
 	step(len(steps)-1, "")
 	rep.Inventories = []model.Inventory{e.browserInventory(), e.aiInventory(), e.languageInventory(cands), e.downloadsInventory()}
+	for i := range rep.Inventories {
+		if rep.Inventories[i].Items == nil {
+			rep.Inventories[i].Items = []model.InvItem{} // an empty area is [], never null: front ends expect a list
+		}
+		for j := range rep.Inventories[i].Items {
+			for k := range rep.Inventories[i].Items[j].Groups {
+				if rep.Inventories[i].Items[j].Groups[k].Parts == nil {
+					rep.Inventories[i].Items[j].Groups[k].Parts = []model.Part{}
+				}
+			}
+		}
+	}
 
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].Safety.Rank() != findings[j].Safety.Rank() {
@@ -134,6 +155,18 @@ func Run(o Options) model.Report {
 	}
 	rep.Findings = findings
 	rep.Totals = totals(findings)
+	if len(e.skipped) > 0 && fsx.NoPrompt {
+		var names []string
+		for p := range e.skipped {
+			if e.skipped[p] == "privacy" {
+				names = append(names, e.Pretty(p))
+			}
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			e.fact("not opened (privacy)", strings.Join(limit(names, 6), ", "), "These need Full Disk Access. Their space is in the not-explained total.")
+		}
+	}
 	rep.Facts = e.Facts
 	rep.Warnings = append(e.Warn, "This tool only recommends. Check every path and command yourself before you run it.")
 	rep.DurationSec = time.Since(start).Seconds()
@@ -340,6 +373,17 @@ func parallelMulti(jobs, n int, fn func(int) []model.Finding) []model.Finding {
 }
 
 func probeHave(n string) bool { return probe.Have(n) }
+
+func exePath() string {
+	p, err := os.Executable()
+	if err != nil {
+		return "the spaceaudit binary"
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
 
 func ownerIsMe(st os.FileInfo) bool {
 	sys, ok := st.Sys().(*syscall.Stat_t)

@@ -388,7 +388,7 @@ func findNamed(root, name string, depth int) string {
 
 // walkDepth calls fn for each folder up to depth. fn returns true to stop descent into that folder.
 func walkDepth(root string, depth int, fn func(p, name string) bool) {
-	if depth == 0 {
+	if depth == 0 || fsx.Blocked(root) != "" {
 		return
 	}
 	ents, err := os.ReadDir(root)

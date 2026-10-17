@@ -48,6 +48,54 @@ func Provider(p, home string) bool {
 // Home is the folder that Provider checks against. The scanner sets it once.
 var Home string
 
+// NoPrompt is true when the scan must not touch folders that make macOS show a privacy prompt.
+// The scanner sets it when it has no Full Disk Access and the user did not ask for prompts.
+var NoPrompt bool
+
+// promptRoots are protected by macOS privacy controls: a read can show "would like to access" dialogs.
+var promptRoots = []string{"Desktop", "Documents", "Downloads"}
+
+// containerRoots hold other apps' data: macOS 14 and later ask before a program reads inside them.
+var containerRoots = []string{"Library/Containers", "Library/Group Containers"}
+
+// Blocked reports why the scan must not open p: "cloud" for File Provider folders,
+// "privacy" for folders that would show a macOS prompt, or "" when it is free to read.
+func Blocked(p string) string {
+	if Home == "" {
+		return ""
+	}
+	if Provider(p, Home) {
+		return "cloud"
+	}
+	if !NoPrompt {
+		return ""
+	}
+	for _, r := range promptRoots {
+		if Under(p, filepath.Join(Home, r)) {
+			return "privacy"
+		}
+	}
+	for _, r := range containerRoots {
+		root := filepath.Join(Home, r)
+		if p != root && Under(p, root) {
+			return "privacy"
+		}
+	}
+	return ""
+}
+
+// FullDiskAccess reports whether this process has Full Disk Access. Reading TCC.db needs it,
+// and a failed read never shows a prompt, so the check is silent.
+func FullDiskAccess() bool {
+	for _, p := range []string{"/Library/Application Support/com.apple.TCC/TCC.db", filepath.Join(Home, "Library/Application Support/com.apple.TCC/TCC.db")} {
+		if f, err := os.Open(p); err == nil {
+			f.Close()
+			return true
+		}
+	}
+	return false
+}
+
 // MeasureWithin is Measure that gives up only when the walk stalls: no new entry for the stall time.
 // A big folder takes as long as it needs; a syscall that blocks for good (a privacy prompt) is abandoned.
 func MeasureWithin(root string, stall time.Duration) Usage {
@@ -76,15 +124,15 @@ func Measure(root string) Usage { return measure(root, nil, nil) }
 
 func measure(root string, seenN, bytesN *atomic.Int64) Usage {
 	var u Usage
+	if Blocked(root) != "" {
+		u.Skipped = true // checked before any syscall: even an lstat inside a protected folder can prompt
+		return u
+	}
 	st, err := os.Lstat(root)
 	if err != nil {
 		return u
 	}
 	u.Exists = true
-	if Home != "" && Provider(root, Home) {
-		u.Skipped = true
-		return u
-	}
 	rootSys, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
 		return u
@@ -115,7 +163,7 @@ func measure(root string, seenN, bytesN *atomic.Int64) Usage {
 		if !ok {
 			return nil
 		}
-		if d.IsDir() && (sys.Dev != rootSys.Dev || (Home != "" && p != root && Provider(p, Home))) {
+		if d.IsDir() && (sys.Dev != rootSys.Dev || (p != root && Blocked(p) != "")) {
 			return fs.SkipDir
 		}
 		before := u.Bytes
@@ -175,21 +223,42 @@ func Expand(p, home string) string {
 	return p
 }
 
-// Glob expands ~ and wildcards and returns only paths that exist.
+// Glob expands ~ and wildcards and returns only paths that exist and may be read.
+// A pattern that reaches into a blocked folder is not expanded at all, because expanding it reads there.
 func Glob(pattern, home string) []string {
 	pattern = Expand(pattern, home)
-	if !strings.ContainsAny(pattern, "*?[") {
+	wild := strings.ContainsAny(pattern, "*?[")
+	static := pattern
+	if wild {
+		static = filepath.Dir(pattern[:strings.IndexAny(pattern, "*?[")] + "x")
+	}
+	if Blocked(static) != "" || (wild && Blocked(filepath.Join(static, "x")) != "") {
+		return nil
+	}
+	if !wild {
 		if _, err := os.Lstat(pattern); err == nil {
 			return []string{pattern}
 		}
 		return nil
 	}
 	m, _ := filepath.Glob(pattern)
-	return m
+	var out []string
+	for _, p := range m {
+		if Blocked(p) == "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
-// Exists reports whether a path exists without following a final symlink.
-func Exists(p string) bool { _, err := os.Lstat(p); return err == nil }
+// Exists reports whether a path exists without following a final symlink. A blocked path reports false.
+func Exists(p string) bool {
+	if Blocked(p) != "" {
+		return false
+	}
+	_, err := os.Lstat(p)
+	return err == nil
+}
 
 // Human formats bytes with binary units.
 func Human(b int64) string {
